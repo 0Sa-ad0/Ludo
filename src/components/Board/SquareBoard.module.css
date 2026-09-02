@@ -1,0 +1,19 @@
+.board {
+  width: 100%;
+  height: 100%;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow:
+    0 0 40px rgba(255,45,120,0.1),
+    0 0 80px rgba(0,200,255,0.06),
+    0 0 0 1px rgba(255,255,255,0.08);
+  touch-action: manipulation;
+}
+
+.validGlow {
+  animation: pulse-glow 0.8s infinite;
+}
+
+.movingPiece {
+  animation: piece-move 0.5s ease-out;
+}

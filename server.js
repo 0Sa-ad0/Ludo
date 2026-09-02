@@ -1,0 +1,525 @@
+/**
+ * Custom Express + Socket.io server.
+ * Run with: node server.js
+ * This replaces `next dev` / `next start`.
+ */
+
+const { createServer } = require('http');
+const { parse }        = require('url');
+const next             = require('next');
+const { Server }       = require('socket.io');
+const { v4: uuidv4 }   = require('uuid');
+
+const dev  = process.env.NODE_ENV !== 'production';
+const port = parseInt(process.env.PORT || '3000', 10);
+
+const app    = next({ dev });
+const handle = app.getRequestHandler();
+
+// ─── In-memory game rooms (also persisted to MySQL) ──────────────────────────
+// Imported here to avoid TypeScript compilation issues in plain .js
+// Game logic is handled by gameEngine (compiled separately or via ts-node)
+
+let pool;
+try {
+  const mysql = require('mysql2/promise');
+  pool = mysql.createPool({
+    host:             process.env.DB_HOST     || 'localhost',
+    port:             Number(process.env.DB_PORT) || 3306,
+    user:             process.env.DB_USER     || 'root',
+    password:         process.env.DB_PASSWORD || '',
+    database:         process.env.DB_NAME     || 'ludo_game',
+    waitForConnections: true,
+    connectionLimit:  10,
+  });
+  console.log('[DB] MySQL pool created');
+} catch (e) {
+  console.warn('[DB] MySQL not available — running without persistence:', e.message);
+}
+
+// Active game states in memory  { roomCode -> GameState }
+const gameRooms = new Map();
+// Disconnect timers { socketId -> setTimeout handle }
+const disconnectTimers = new Map();
+// Auto timers { `${roomCode}_${playerIndex}` -> setTimeout handle }
+const autoTimers = new Map();
+
+const RECONNECT_GRACE_MS = 30_000;
+const AUTO_MOVE_DELAY_MS = 2_000;
+
+function generateRoomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+function createInitialState(roomCode, playerCount, passwordHash) {
+  return {
+    id:                   uuidv4(),
+    roomCode,
+    playerCount,
+    passwordHash:         passwordHash || null,
+    status:               'waiting',
+    currentPlayerIndex:   0,
+    players:              [],
+    diceValue:            null,
+    diceRolled:           false,
+    lastMove:             null,
+    winner:               null,
+    rankings:             [],
+  };
+}
+
+function createPlayer(gameId, name, colorIndex, slotIndex) {
+  const pieces = Array.from({ length: 4 }, (_, i) => ({
+    id:            `p${slotIndex}_piece${i}`,
+    playerIndex:   slotIndex,
+    pieceIndex:    i,
+    status:        'home',
+    trackPosition: -1,
+    pathPosition:  -1,
+  }));
+  return {
+    id:          uuidv4(),
+    gameId,
+    name,
+    colorIndex,
+    slotIndex,
+    socketId:    null,
+    isConnected: false,
+    isAuto:      false,
+    isFinished:  false,
+    finishRank:  null,
+    pieces,
+  };
+}
+
+// ─── Dice & Move Logic (inline for server.js) ─────────────────────────────────
+const SQUARE_TRACK_LEN = 52;
+const HEX_TRACK_LEN    = 60;
+const HOME_COL_LEN     = 5;
+
+const SQUARE_START = { 0: 0, 1: 13, 2: 26, 3: 39 };
+const HEX_START    = { 0: 0, 1: 10, 2: 20, 3: 30, 4: 40, 5: 50 };
+const SQUARE_SAFE  = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
+const HEX_SAFE     = new Set([0, 8, 10, 18, 20, 28, 30, 38, 40, 48, 50, 58]);
+
+function getTrackLen(pc) { return pc <= 4 ? SQUARE_TRACK_LEN : HEX_TRACK_LEN; }
+function getSafeSet(pc)  { return pc <= 4 ? SQUARE_SAFE : HEX_SAFE; }
+function getStartSq(idx, pc) { return pc <= 4 ? SQUARE_START[idx] : HEX_START[idx]; }
+
+function pathToTrack(pathPos, playerIndex, pc) {
+  const trackLen = getTrackLen(pc);
+  return (getStartSq(playerIndex, pc) + pathPos) % trackLen;
+}
+
+function getValidMoves(player, diceValue, state) {
+  const pc = state.playerCount;
+  const trackLen = getTrackLen(pc);
+  const totalPath = trackLen + HOME_COL_LEN;
+
+  return player.pieces
+    .filter((piece) => {
+      if (piece.status === 'finished') return false;
+      if (piece.status === 'home')     return diceValue === 6;
+      return piece.pathPosition + diceValue <= totalPath;
+    })
+    .map((p) => p.id);
+}
+
+function applyMove(state, playerIndex, pieceId, diceValue) {
+  const s = JSON.parse(JSON.stringify(state));
+  const player = s.players[playerIndex];
+  const piece  = player.pieces.find((p) => p.id === pieceId);
+  if (!piece) return s;
+
+  const pc = s.playerCount;
+  const trackLen  = getTrackLen(pc);
+  const totalPath = trackLen + HOME_COL_LEN;
+  const safeSet   = getSafeSet(pc);
+
+  if (piece.status === 'home') {
+    piece.status       = 'active';
+    piece.pathPosition = 0;
+    piece.trackPosition = getStartSq(playerIndex, pc);
+  } else {
+    piece.pathPosition += diceValue;
+    piece.trackPosition = piece.pathPosition < trackLen
+      ? pathToTrack(piece.pathPosition, playerIndex, pc)
+      : -1;
+  }
+
+  if (piece.pathPosition === totalPath) {
+    piece.status = 'finished';
+    const allDone = player.pieces.every((p) => p.status === 'finished');
+    if (allDone && !player.isFinished) {
+      player.isFinished = true;
+      player.finishRank = s.rankings.length + 1;
+      s.rankings.push(playerIndex);
+    }
+  }
+
+  // Capture check
+  if (piece.status === 'active' && piece.trackPosition !== -1) {
+    const tp = piece.trackPosition;
+    const startSq = getStartSq(playerIndex, pc);
+    const isSafe = safeSet.has(tp) || tp === startSq;
+    if (!isSafe) {
+      for (const opp of s.players) {
+        if (opp.slotIndex === playerIndex) continue;
+        for (const op of opp.pieces) {
+          if (op.status !== 'active' || op.trackPosition !== tp) continue;
+          const sameCount = opp.pieces.filter(p => p.status === 'active' && p.trackPosition === tp).length;
+          if (sameCount >= 2) continue; // block
+          op.status = 'home'; op.pathPosition = -1; op.trackPosition = -1;
+        }
+      }
+    }
+  }
+
+  // Advance turn
+  if (diceValue !== 6) {
+    let next = (playerIndex + 1) % pc;
+    let guard = 0;
+    while (s.players[next].isFinished && guard < pc) {
+      next = (next + 1) % pc; guard++;
+    }
+    s.currentPlayerIndex = next;
+  }
+  s.diceRolled = false;
+  s.diceValue  = null;
+  s.lastMove   = { playerIndex, pieceId, isAuto: false };
+
+  const active = s.players.filter(p => !p.isFinished);
+  if (active.length <= 1) {
+    if (active.length === 1) {
+      const last = active[0];
+      last.isFinished = true; last.finishRank = s.rankings.length + 1;
+      s.rankings.push(last.slotIndex);
+    }
+    s.status = 'finished';
+  }
+
+  return s;
+}
+
+function pickAutoMove(player, diceValue, state) {
+  const valid = getValidMoves(player, diceValue, state);
+  if (!valid.length) return null;
+  return valid[Math.floor(Math.random() * valid.length)];
+}
+
+async function saveGameState(state) {
+  if (!pool) return;
+  try {
+    await pool.execute(
+      'UPDATE games SET board_state = ?, status = ?, current_player_index = ?, updated_at = NOW() WHERE id = ?',
+      [JSON.stringify(state), state.status, state.currentPlayerIndex, state.id]
+    );
+  } catch (e) { console.warn('[DB] saveGameState error:', e.message); }
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+app.prepare().then(() => {
+  const httpServer = createServer((req, res) => {
+    const parsedUrl = parse(req.url, true);
+    handle(req, res, parsedUrl);
+  });
+
+  const io = new Server(httpServer, {
+    cors: { origin: '*', methods: ['GET', 'POST'] },
+    path: '/api/socket',
+  });
+
+  // ─── Socket.io Events ──────────────────────────────────────────────────────
+  io.on('connection', (socket) => {
+    console.log('[WS] Connected:', socket.id);
+
+    // ── Ping ──────────────────────────────────────────────────────────────────
+    socket.on('ping', (clientTime) => {
+      socket.emit('ping_ack', clientTime);
+    });
+
+    // ── Create Room ───────────────────────────────────────────────────────────
+    socket.on('create_room', async ({ playerCount, playerName, password }) => {
+      let roomCode = generateRoomCode();
+      while (gameRooms.has(roomCode)) roomCode = generateRoomCode();
+
+      const state = createInitialState(roomCode, playerCount, password || null);
+      const player = createPlayer(state.id, playerName, 0, 0);
+      player.socketId = socket.id;
+      player.isConnected = true;
+      state.players.push(player);
+
+      gameRooms.set(roomCode, state);
+
+      // Persist to DB
+      if (pool) {
+        try {
+          await pool.execute(
+            'INSERT INTO games (id, room_code, password_hash, player_count, status, current_player_index, board_state) VALUES (?,?,?,?,?,?,?)',
+            [state.id, roomCode, state.passwordHash, playerCount, 'waiting', 0, JSON.stringify(state)]
+          );
+          await pool.execute(
+            'INSERT INTO players (id, game_id, name, color_index, slot_index, socket_id, is_connected) VALUES (?,?,?,?,?,?,?)',
+            [player.id, state.id, player.name, 0, 0, socket.id, true]
+          );
+        } catch (e) { console.warn('[DB] create_room error:', e.message); }
+      }
+
+      socket.join(roomCode);
+      socket.data.roomCode    = roomCode;
+      socket.data.playerIndex = 0;
+
+      socket.emit('room_created', { roomCode, playerIndex: 0 });
+      socket.emit('game_state', state);
+    });
+
+    // ── Join Room ─────────────────────────────────────────────────────────────
+    socket.on('join_room', async ({ roomCode, playerName, password }) => {
+      const state = gameRooms.get(roomCode);
+      if (!state) { socket.emit('error', 'Room not found'); return; }
+      if (state.status === 'finished') { socket.emit('error', 'Game already finished'); return; }
+
+      // Password check
+      if (state.passwordHash && state.passwordHash !== password) {
+        socket.emit('error', 'Wrong password'); return;
+      }
+
+      // Reconnect existing player?
+      const existing = state.players.find(p => p.name === playerName && !p.isConnected);
+      if (existing) {
+        existing.socketId    = socket.id;
+        existing.isConnected = true;
+        existing.isAuto      = false;
+
+        // Clear auto timer
+        const autoKey = `${roomCode}_${existing.slotIndex}`;
+        if (autoTimers.has(autoKey)) { clearTimeout(autoTimers.get(autoKey)); autoTimers.delete(autoKey); }
+
+        socket.join(roomCode);
+        socket.data.roomCode    = roomCode;
+        socket.data.playerIndex = existing.slotIndex;
+
+        io.to(roomCode).emit('player_reconnected', existing.slotIndex);
+        socket.emit('game_state', state);
+        socket.emit('joined', { playerIndex: existing.slotIndex });
+        return;
+      }
+
+      // New player
+      if (state.players.length >= state.playerCount) { socket.emit('error', 'Room is full'); return; }
+      if (state.status !== 'waiting')                 { socket.emit('error', 'Game already started'); return; }
+
+      const colorIndex = state.players.length;
+      const slotIndex  = state.players.length;
+      const player = createPlayer(state.id, playerName, colorIndex, slotIndex);
+      player.socketId    = socket.id;
+      player.isConnected = true;
+      state.players.push(player);
+
+      if (pool) {
+        try {
+          await pool.execute(
+            'INSERT INTO players (id, game_id, name, color_index, slot_index, socket_id, is_connected) VALUES (?,?,?,?,?,?,?)',
+            [player.id, state.id, playerName, colorIndex, slotIndex, socket.id, true]
+          );
+        } catch (e) { console.warn('[DB] join_room insert player error:', e.message); }
+      }
+
+      socket.join(roomCode);
+      socket.data.roomCode    = roomCode;
+      socket.data.playerIndex = slotIndex;
+
+      io.to(roomCode).emit('game_state', state);
+      socket.emit('joined', { playerIndex: slotIndex });
+
+      // Auto-start when room is full
+      if (state.players.length === state.playerCount) {
+        state.status = 'playing';
+        await saveGameState(state);
+        io.to(roomCode).emit('game_started', state);
+        io.to(roomCode).emit('game_state', state);
+      }
+    });
+
+    // ── Roll Dice ─────────────────────────────────────────────────────────────
+    socket.on('roll_dice', async () => {
+      const { roomCode, playerIndex } = socket.data;
+      const state = gameRooms.get(roomCode);
+      if (!state || state.status !== 'playing') return;
+      if (state.currentPlayerIndex !== playerIndex) return;
+      if (state.diceRolled) return;
+
+      const value = Math.floor(Math.random() * 6) + 1;
+      state.diceValue  = value;
+      state.diceRolled = true;
+
+      io.to(roomCode).emit('dice_rolled', { playerIndex, value });
+      io.to(roomCode).emit('game_state', state);
+
+      // Check if any valid move exists
+      const player = state.players[playerIndex];
+      const valid  = getValidMoves(player, value, state);
+      if (valid.length === 0) {
+        // No move possible — skip turn
+        setTimeout(async () => {
+          if (value !== 6) {
+            let next = (playerIndex + 1) % state.playerCount;
+            let guard = 0;
+            while (state.players[next].isFinished && guard < state.playerCount) {
+              next = (next + 1) % state.playerCount; guard++;
+            }
+            state.currentPlayerIndex = next;
+          }
+          state.diceRolled = false;
+          state.diceValue  = null;
+          await saveGameState(state);
+          io.to(roomCode).emit('game_state', state);
+        }, 1500);
+      }
+    });
+
+    // ── Move Piece ────────────────────────────────────────────────────────────
+    socket.on('move_piece', async ({ pieceId }) => {
+      const { roomCode, playerIndex } = socket.data;
+      const state = gameRooms.get(roomCode);
+      if (!state || state.status !== 'playing') return;
+      if (state.currentPlayerIndex !== playerIndex) return;
+      if (!state.diceRolled) return;
+
+      const player = state.players[playerIndex];
+      const valid  = getValidMoves(player, state.diceValue, state);
+      if (!valid.includes(pieceId)) { socket.emit('error', 'Invalid move'); return; }
+
+      const newState = applyMove(state, playerIndex, pieceId, state.diceValue);
+      gameRooms.set(roomCode, newState);
+      await saveGameState(newState);
+
+      io.to(roomCode).emit('piece_moved', { playerIndex, pieceId });
+      io.to(roomCode).emit('game_state', newState);
+
+      if (newState.status === 'finished') {
+        io.to(roomCode).emit('game_over', newState.rankings);
+        // Update leaderboard
+        if (pool) {
+          for (const p of newState.players) {
+            const wins = p.finishRank === 1 ? 1 : 0;
+            try {
+              await pool.execute(
+                'INSERT INTO leaderboard (player_name, wins, games_played) VALUES (?,?,1) ON DUPLICATE KEY UPDATE wins = wins + ?, games_played = games_played + 1',
+                [p.name, wins, wins]
+              );
+            } catch (e) { console.warn('[DB] leaderboard update error:', e.message); }
+          }
+        }
+        return;
+      }
+
+      // Set auto timer for next player if they're offline
+      scheduleAutoIfNeeded(io, roomCode, newState);
+    });
+
+    // ── Disconnect ────────────────────────────────────────────────────────────
+    socket.on('disconnect', () => {
+      const { roomCode, playerIndex } = socket.data || {};
+      if (!roomCode) return;
+      const state = gameRooms.get(roomCode);
+      if (!state) return;
+
+      const player = state.players[playerIndex];
+      if (!player) return;
+      player.isConnected = false;
+
+      io.to(roomCode).emit('player_left', playerIndex);
+      io.to(roomCode).emit('game_state', state);
+
+      // Grace period before AUTO
+      const timer = setTimeout(() => {
+        player.isAuto = true;
+        io.to(roomCode).emit('player_auto', playerIndex);
+        io.to(roomCode).emit('game_state', state);
+        // If it's their turn, auto-handle it
+        if (state.status === 'playing' && state.currentPlayerIndex === playerIndex) {
+          doAutoTurn(io, roomCode, state);
+        }
+      }, RECONNECT_GRACE_MS);
+
+      disconnectTimers.set(socket.id, timer);
+    });
+  });
+
+  // ─── AUTO turn logic ─────────────────────────────────────────────────────
+  function doAutoTurn(io, roomCode, state) {
+    setTimeout(async () => {
+      const s = gameRooms.get(roomCode);
+      if (!s || s.status !== 'playing') return;
+      const pi = s.currentPlayerIndex;
+      const player = s.players[pi];
+      if (!player || player.isConnected) return; // came back online
+
+      // Roll
+      const value = Math.floor(Math.random() * 6) + 1;
+      s.diceValue = value; s.diceRolled = true;
+      io.to(roomCode).emit('dice_rolled', { playerIndex: pi, value, isAuto: true });
+
+      setTimeout(async () => {
+        const s2 = gameRooms.get(roomCode);
+        if (!s2) return;
+        const pieceId = pickAutoMove(s2.players[pi], value, s2);
+        if (pieceId) {
+          const newState = applyMove(s2, pi, pieceId, value);
+          newState.lastMove = { playerIndex: pi, pieceId, isAuto: true };
+          gameRooms.set(roomCode, newState);
+          await saveGameState(newState);
+          io.to(roomCode).emit('piece_moved', { playerIndex: pi, pieceId, isAuto: true });
+          io.to(roomCode).emit('game_state', newState);
+          if (newState.status === 'finished') {
+            io.to(roomCode).emit('game_over', newState.rankings);
+            return;
+          }
+          scheduleAutoIfNeeded(io, roomCode, newState);
+        } else {
+          // No valid move — skip
+          if (value !== 6) {
+            let next = (pi + 1) % s2.playerCount;
+            let guard = 0;
+            while (s2.players[next].isFinished && guard < s2.playerCount) { next = (next + 1) % s2.playerCount; guard++; }
+            s2.currentPlayerIndex = next;
+          }
+          s2.diceRolled = false; s2.diceValue = null;
+          gameRooms.set(roomCode, s2);
+          await saveGameState(s2);
+          io.to(roomCode).emit('game_state', s2);
+          scheduleAutoIfNeeded(io, roomCode, s2);
+        }
+      }, AUTO_MOVE_DELAY_MS);
+    }, 1500);
+  }
+
+  function scheduleAutoIfNeeded(io, roomCode, state) {
+    const pi = state.currentPlayerIndex;
+    const player = state.players[pi];
+    if (!player || player.isConnected || !player.isAuto) return;
+    if (state.status !== 'playing') return;
+    doAutoTurn(io, roomCode, state);
+  }
+
+  // ─── Start HTTP server ────────────────────────────────────────────────────
+  httpServer.listen(port, '0.0.0.0', () => {
+    console.log(`\n🎮 Ludo Game running at:`);
+    console.log(`   Local:   http://localhost:${port}`);
+    // Get local IP
+    const { networkInterfaces } = require('os');
+    const nets = networkInterfaces();
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name]) {
+        if (net.family === 'IPv4' && !net.internal) {
+          console.log(`   Network: http://${net.address}:${port}  ← Share this on WiFi`);
+        }
+      }
+    }
+    console.log('\n');
+  });
+});

@@ -1,0 +1,58 @@
+.wrapper {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.dice {
+  width: 70px;
+  height: 70px;
+  border-radius: 18px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: default;
+  transition: transform 0.2s, filter 0.2s;
+  flex-shrink: 0;
+  touch-action: manipulation;
+}
+
+.rollable {
+  cursor: pointer;
+  animation: bounce 1.2s ease-in-out infinite;
+}
+
+.rollable:active { transform: scale(0.9); }
+
+.rolling {
+  animation: dice-roll 0.7s ease-out forwards !important;
+}
+
+.diceSvg { width: 100%; height: 100%; }
+
+.diceRect {
+  filter: drop-shadow(0 0 8px var(--player-color, var(--pink)));
+}
+
+.diceDot {
+  animation: fade-in 0.15s ease;
+}
+
+.hint {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+}
+
+.tapHint {
+  font-weight: 700;
+  animation: pulse-glow 1s infinite;
+}
+
+.rolled { color: var(--text); }
+.rolled strong { color: var(--gold); font-size: 1.1rem; }
+.waiting { color: var(--text-dim); }
+
+@media (max-width: 480px) {
+  .dice { width: 58px; height: 58px; }
+}
