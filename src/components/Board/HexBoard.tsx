@@ -63,10 +63,11 @@ interface Props {
   gameState: GameState;
   myPlayerIndex: number;
   movingPiece: string | null;
+  capturingPiece?: string | null;
   onPieceClick: (pieceId: string) => void;
 }
 
-export default function HexBoard({ gameState, myPlayerIndex, movingPiece, onPieceClick }: Props) {
+export default function HexBoard({ gameState, myPlayerIndex, movingPiece, capturingPiece, onPieceClick }: Props) {
   const { players, currentPlayerIndex, diceValue, diceRolled } = gameState;
 
   const validMoveIds = (() => {
@@ -175,13 +176,14 @@ export default function HexBoard({ gameState, myPlayerIndex, movingPiece, onPiec
           const [px, py] = pos;
           const color = PLAYER_COLORS[player.colorIndex];
           const isValid = validMoveIds.has(piece.id);
+          const isCapturing = piece.id === capturingPiece;
           return (
-            <g key={piece.id} onClick={() => isValid && onPieceClick(piece.id)} style={{cursor: isValid ? 'pointer' : 'default'}}
-              className={piece.id === movingPiece ? styles.movingPiece : ''}>
+            <g key={piece.id} data-testid={`piece-${piece.id}`} data-valid={isValid} onClick={() => isValid && onPieceClick(piece.id)} style={{cursor: isValid ? 'pointer' : 'default'}}
+              className={`${piece.id === movingPiece ? styles.movingPiece : ''} ${isCapturing ? styles.captureFlash : ''}`}>
               {isValid && <circle cx={px} cy={py} r={20} fill="rgba(255,255,255,0.1)" stroke={color.hex} strokeWidth="2" className={styles.validGlow} />}
-              <circle cx={px} cy={py} r={13} fill={color.hex} stroke="#fff" strokeWidth="2"
+              <circle cx={px} cy={py} r={13} fill={color.hex} stroke="#fff" strokeWidth="2" className={styles.pieceCircle}
                 style={{filter:`drop-shadow(0 0 ${isValid?8:4}px ${color.hex})`}} />
-              <text x={px} y={py} textAnchor="middle" dominantBaseline="central" fontSize="10" fill="#000" fontWeight="bold" style={{userSelect:'none',pointerEvents:'none'}}>
+              <text x={px} y={py} textAnchor="middle" dominantBaseline="central" fontSize="10" fill="#000" fontWeight="bold" className={styles.pieceCircle} style={{userSelect:'none',pointerEvents:'none'}}>
                 {piece.pieceIndex+1}
               </text>
             </g>

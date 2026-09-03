@@ -31,12 +31,12 @@ export default function WaitingRoom({ gameState, roomCode, shareUrl, myPlayerInd
     <div className={styles.wrapper}>
       <div className={`${styles.card} card`}>
         <h2 className={`${styles.title} font-orbitron neon-text-pink`}>Waiting for Players</h2>
-        <p className={styles.sub}>{gameState.players.length} / {gameState.playerCount} joined</p>
+        <p className={styles.sub} data-testid="waiting-count">{gameState.players.length} / {gameState.playerCount} joined</p>
 
         {/* Room code */}
         <div className={styles.codeBox}>
           <span className={styles.codeLabel}>Room Code</span>
-          <span className={`${styles.code} font-orbitron`}>{roomCode}</span>
+          <span className={`${styles.code} font-orbitron`} data-testid="room-code">{roomCode}</span>
           <button className="btn btn-ghost" onClick={copyCode} id="btn-copy-code">
             {copied ? '✓ Copied' : 'Copy'}
           </button>

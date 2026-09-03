@@ -8,10 +8,14 @@ const { createServer } = require('http');
 const { parse }        = require('url');
 const next             = require('next');
 const { Server }       = require('socket.io');
-const { v4: uuidv4 }   = require('uuid');
+const bcrypt           = require('bcryptjs');
+const {
+  generateRoomCode, createInitialState, sanitizeState, createPlayer,
+  getValidMoves, applyMove, pickAutoMove,
+} = require('./game-logic');
 
 const dev  = process.env.NODE_ENV !== 'production';
-const port = parseInt(process.env.PORT || '3000', 10);
+const port = parseInt(process.env.PORT || '4000', 10);
 
 const app    = next({ dev });
 const handle = app.getRequestHandler();
@@ -39,176 +43,14 @@ try {
 
 // Active game states in memory  { roomCode -> GameState }
 const gameRooms = new Map();
-// Disconnect timers { socketId -> setTimeout handle }
+// Disconnect timers { `${roomCode}_${playerIndex}` -> setTimeout handle }
 const disconnectTimers = new Map();
 // Auto timers { `${roomCode}_${playerIndex}` -> setTimeout handle }
 const autoTimers = new Map();
 
-const RECONNECT_GRACE_MS = 30_000;
-const AUTO_MOVE_DELAY_MS = 2_000;
-
-function generateRoomCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
-  return code;
-}
-
-function createInitialState(roomCode, playerCount, passwordHash) {
-  return {
-    id:                   uuidv4(),
-    roomCode,
-    playerCount,
-    passwordHash:         passwordHash || null,
-    status:               'waiting',
-    currentPlayerIndex:   0,
-    players:              [],
-    diceValue:            null,
-    diceRolled:           false,
-    lastMove:             null,
-    winner:               null,
-    rankings:             [],
-  };
-}
-
-function createPlayer(gameId, name, colorIndex, slotIndex) {
-  const pieces = Array.from({ length: 4 }, (_, i) => ({
-    id:            `p${slotIndex}_piece${i}`,
-    playerIndex:   slotIndex,
-    pieceIndex:    i,
-    status:        'home',
-    trackPosition: -1,
-    pathPosition:  -1,
-  }));
-  return {
-    id:          uuidv4(),
-    gameId,
-    name,
-    colorIndex,
-    slotIndex,
-    socketId:    null,
-    isConnected: false,
-    isAuto:      false,
-    isFinished:  false,
-    finishRank:  null,
-    pieces,
-  };
-}
-
-// ─── Dice & Move Logic (inline for server.js) ─────────────────────────────────
-const SQUARE_TRACK_LEN = 52;
-const HEX_TRACK_LEN    = 60;
-const HOME_COL_LEN     = 5;
-
-const SQUARE_START = { 0: 0, 1: 13, 2: 26, 3: 39 };
-const HEX_START    = { 0: 0, 1: 10, 2: 20, 3: 30, 4: 40, 5: 50 };
-const SQUARE_SAFE  = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
-const HEX_SAFE     = new Set([0, 8, 10, 18, 20, 28, 30, 38, 40, 48, 50, 58]);
-
-function getTrackLen(pc) { return pc <= 4 ? SQUARE_TRACK_LEN : HEX_TRACK_LEN; }
-function getSafeSet(pc)  { return pc <= 4 ? SQUARE_SAFE : HEX_SAFE; }
-function getStartSq(idx, pc) { return pc <= 4 ? SQUARE_START[idx] : HEX_START[idx]; }
-
-function pathToTrack(pathPos, playerIndex, pc) {
-  const trackLen = getTrackLen(pc);
-  return (getStartSq(playerIndex, pc) + pathPos) % trackLen;
-}
-
-function getValidMoves(player, diceValue, state) {
-  const pc = state.playerCount;
-  const trackLen = getTrackLen(pc);
-  const totalPath = trackLen + HOME_COL_LEN;
-
-  return player.pieces
-    .filter((piece) => {
-      if (piece.status === 'finished') return false;
-      if (piece.status === 'home')     return diceValue === 6;
-      return piece.pathPosition + diceValue <= totalPath;
-    })
-    .map((p) => p.id);
-}
-
-function applyMove(state, playerIndex, pieceId, diceValue) {
-  const s = JSON.parse(JSON.stringify(state));
-  const player = s.players[playerIndex];
-  const piece  = player.pieces.find((p) => p.id === pieceId);
-  if (!piece) return s;
-
-  const pc = s.playerCount;
-  const trackLen  = getTrackLen(pc);
-  const totalPath = trackLen + HOME_COL_LEN;
-  const safeSet   = getSafeSet(pc);
-
-  if (piece.status === 'home') {
-    piece.status       = 'active';
-    piece.pathPosition = 0;
-    piece.trackPosition = getStartSq(playerIndex, pc);
-  } else {
-    piece.pathPosition += diceValue;
-    piece.trackPosition = piece.pathPosition < trackLen
-      ? pathToTrack(piece.pathPosition, playerIndex, pc)
-      : -1;
-  }
-
-  if (piece.pathPosition === totalPath) {
-    piece.status = 'finished';
-    const allDone = player.pieces.every((p) => p.status === 'finished');
-    if (allDone && !player.isFinished) {
-      player.isFinished = true;
-      player.finishRank = s.rankings.length + 1;
-      s.rankings.push(playerIndex);
-    }
-  }
-
-  // Capture check
-  if (piece.status === 'active' && piece.trackPosition !== -1) {
-    const tp = piece.trackPosition;
-    const startSq = getStartSq(playerIndex, pc);
-    const isSafe = safeSet.has(tp) || tp === startSq;
-    if (!isSafe) {
-      for (const opp of s.players) {
-        if (opp.slotIndex === playerIndex) continue;
-        for (const op of opp.pieces) {
-          if (op.status !== 'active' || op.trackPosition !== tp) continue;
-          const sameCount = opp.pieces.filter(p => p.status === 'active' && p.trackPosition === tp).length;
-          if (sameCount >= 2) continue; // block
-          op.status = 'home'; op.pathPosition = -1; op.trackPosition = -1;
-        }
-      }
-    }
-  }
-
-  // Advance turn
-  if (diceValue !== 6) {
-    let next = (playerIndex + 1) % pc;
-    let guard = 0;
-    while (s.players[next].isFinished && guard < pc) {
-      next = (next + 1) % pc; guard++;
-    }
-    s.currentPlayerIndex = next;
-  }
-  s.diceRolled = false;
-  s.diceValue  = null;
-  s.lastMove   = { playerIndex, pieceId, isAuto: false };
-
-  const active = s.players.filter(p => !p.isFinished);
-  if (active.length <= 1) {
-    if (active.length === 1) {
-      const last = active[0];
-      last.isFinished = true; last.finishRank = s.rankings.length + 1;
-      s.rankings.push(last.slotIndex);
-    }
-    s.status = 'finished';
-  }
-
-  return s;
-}
-
-function pickAutoMove(player, diceValue, state) {
-  const valid = getValidMoves(player, diceValue, state);
-  if (!valid.length) return null;
-  return valid[Math.floor(Math.random() * valid.length)];
-}
+// Overridable via env for fast, deterministic tests — defaults match production.
+const RECONNECT_GRACE_MS = Number(process.env.RECONNECT_GRACE_MS) || 30_000;
+const AUTO_MOVE_DELAY_MS = Number(process.env.AUTO_MOVE_DELAY_MS) || 2_000;
 
 async function saveGameState(state) {
   if (!pool) return;
@@ -246,7 +88,8 @@ app.prepare().then(() => {
       let roomCode = generateRoomCode();
       while (gameRooms.has(roomCode)) roomCode = generateRoomCode();
 
-      const state = createInitialState(roomCode, playerCount, password || null);
+      const passwordHash = password ? await bcrypt.hash(password, 10) : null;
+      const state = createInitialState(roomCode, playerCount, passwordHash);
       const player = createPlayer(state.id, playerName, 0, 0);
       player.socketId = socket.id;
       player.isConnected = true;
@@ -273,7 +116,7 @@ app.prepare().then(() => {
       socket.data.playerIndex = 0;
 
       socket.emit('room_created', { roomCode, playerIndex: 0 });
-      socket.emit('game_state', state);
+      socket.emit('game_state', sanitizeState(state));
     });
 
     // ── Join Room ─────────────────────────────────────────────────────────────
@@ -283,7 +126,7 @@ app.prepare().then(() => {
       if (state.status === 'finished') { socket.emit('error', 'Game already finished'); return; }
 
       // Password check
-      if (state.passwordHash && state.passwordHash !== password) {
+      if (state.passwordHash && !(await bcrypt.compare(password || '', state.passwordHash))) {
         socket.emit('error', 'Wrong password'); return;
       }
 
@@ -294,16 +137,21 @@ app.prepare().then(() => {
         existing.isConnected = true;
         existing.isAuto      = false;
 
-        // Clear auto timer
+        // Clear auto timer and pending disconnect-grace timer
         const autoKey = `${roomCode}_${existing.slotIndex}`;
         if (autoTimers.has(autoKey)) { clearTimeout(autoTimers.get(autoKey)); autoTimers.delete(autoKey); }
+        if (disconnectTimers.has(autoKey)) { clearTimeout(disconnectTimers.get(autoKey)); disconnectTimers.delete(autoKey); }
 
         socket.join(roomCode);
         socket.data.roomCode    = roomCode;
         socket.data.playerIndex = existing.slotIndex;
 
         io.to(roomCode).emit('player_reconnected', existing.slotIndex);
-        socket.emit('game_state', state);
+        // Broadcast to the whole room, not just the reconnecting socket —
+        // otherwise every other player's UI stays stuck showing the old
+        // disconnected/reconnecting state until some unrelated action (a
+        // roll, a move) happens to trigger the next game_state broadcast.
+        io.to(roomCode).emit('game_state', sanitizeState(state));
         socket.emit('joined', { playerIndex: existing.slotIndex });
         return;
       }
@@ -332,7 +180,7 @@ app.prepare().then(() => {
       socket.data.roomCode    = roomCode;
       socket.data.playerIndex = slotIndex;
 
-      io.to(roomCode).emit('game_state', state);
+      io.to(roomCode).emit('game_state', sanitizeState(state));
       socket.emit('joined', { playerIndex: slotIndex });
 
       // Auto-start when room is full
@@ -340,7 +188,7 @@ app.prepare().then(() => {
         state.status = 'playing';
         await saveGameState(state);
         io.to(roomCode).emit('game_started', state);
-        io.to(roomCode).emit('game_state', state);
+        io.to(roomCode).emit('game_state', sanitizeState(state));
       }
     });
 
@@ -357,7 +205,7 @@ app.prepare().then(() => {
       state.diceRolled = true;
 
       io.to(roomCode).emit('dice_rolled', { playerIndex, value });
-      io.to(roomCode).emit('game_state', state);
+      io.to(roomCode).emit('game_state', sanitizeState(state));
 
       // Check if any valid move exists
       const player = state.players[playerIndex];
@@ -376,7 +224,7 @@ app.prepare().then(() => {
           state.diceRolled = false;
           state.diceValue  = null;
           await saveGameState(state);
-          io.to(roomCode).emit('game_state', state);
+          io.to(roomCode).emit('game_state', sanitizeState(state));
         }, 1500);
       }
     });
@@ -397,8 +245,8 @@ app.prepare().then(() => {
       gameRooms.set(roomCode, newState);
       await saveGameState(newState);
 
-      io.to(roomCode).emit('piece_moved', { playerIndex, pieceId });
-      io.to(roomCode).emit('game_state', newState);
+      io.to(roomCode).emit('piece_moved', { playerIndex, pieceId, capturedPieces: newState.lastMove.capturedPieces });
+      io.to(roomCode).emit('game_state', sanitizeState(newState));
 
       if (newState.status === 'finished') {
         io.to(roomCode).emit('game_over', newState.rankings);
@@ -433,20 +281,22 @@ app.prepare().then(() => {
       player.isConnected = false;
 
       io.to(roomCode).emit('player_left', playerIndex);
-      io.to(roomCode).emit('game_state', state);
+      io.to(roomCode).emit('game_state', sanitizeState(state));
 
       // Grace period before AUTO
+      const disconnectKey = `${roomCode}_${playerIndex}`;
       const timer = setTimeout(() => {
+        if (player.isConnected) return; // reconnected before the grace period elapsed
         player.isAuto = true;
         io.to(roomCode).emit('player_auto', playerIndex);
-        io.to(roomCode).emit('game_state', state);
+        io.to(roomCode).emit('game_state', sanitizeState(state));
         // If it's their turn, auto-handle it
         if (state.status === 'playing' && state.currentPlayerIndex === playerIndex) {
           doAutoTurn(io, roomCode, state);
         }
       }, RECONNECT_GRACE_MS);
 
-      disconnectTimers.set(socket.id, timer);
+      disconnectTimers.set(disconnectKey, timer);
     });
   });
 
@@ -470,11 +320,11 @@ app.prepare().then(() => {
         const pieceId = pickAutoMove(s2.players[pi], value, s2);
         if (pieceId) {
           const newState = applyMove(s2, pi, pieceId, value);
-          newState.lastMove = { playerIndex: pi, pieceId, isAuto: true };
+          newState.lastMove = { ...newState.lastMove, playerIndex: pi, pieceId, isAuto: true };
           gameRooms.set(roomCode, newState);
           await saveGameState(newState);
-          io.to(roomCode).emit('piece_moved', { playerIndex: pi, pieceId, isAuto: true });
-          io.to(roomCode).emit('game_state', newState);
+          io.to(roomCode).emit('piece_moved', { playerIndex: pi, pieceId, isAuto: true, capturedPieces: newState.lastMove.capturedPieces });
+          io.to(roomCode).emit('game_state', sanitizeState(newState));
           if (newState.status === 'finished') {
             io.to(roomCode).emit('game_over', newState.rankings);
             return;
@@ -491,7 +341,7 @@ app.prepare().then(() => {
           s2.diceRolled = false; s2.diceValue = null;
           gameRooms.set(roomCode, s2);
           await saveGameState(s2);
-          io.to(roomCode).emit('game_state', s2);
+          io.to(roomCode).emit('game_state', sanitizeState(s2));
           scheduleAutoIfNeeded(io, roomCode, s2);
         }
       }, AUTO_MOVE_DELAY_MS);

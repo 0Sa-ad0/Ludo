@@ -20,3 +20,11 @@ npm-debug.log*
 # Editor
 .vscode/
 .idea/
+
+# Test artifacts
+test-results/
+playwright-report/
+coverage/
+
+# TypeScript incremental build cache
+*.tsbuildinfo

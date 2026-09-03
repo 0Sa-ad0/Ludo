@@ -27,7 +27,7 @@ DB_PORT=3306
 DB_USER=root
 DB_PASSWORD=        ← add your MySQL password if any
 DB_NAME=ludo_game
-PORT=3000
+PORT=4000
 ```
 
 ### 3. Build the Game
@@ -52,14 +52,14 @@ Just double-click **`start.bat`** — it starts everything automatically.
 node server.js
 ```
 
-The game opens at: `http://localhost:3000`
+The game opens at: `http://localhost:4000`
 
 ---
 
 ## How to Play with Friends
 
 ### Same WiFi (Local)
-- The terminal shows: `Network: http://192.168.x.x:3000`
+- The terminal shows: `Network: http://192.168.x.x:4000`
 - Share that URL with friends connected to the same WiFi
 - They open it on their phone/browser → Join Room
 
@@ -90,7 +90,7 @@ Quick version:
 | Problem | Fix |
 |---|---|
 | "DB error" on startup | Start XAMPP MySQL first |
-| Friends can't connect | Check Windows Firewall — allow Node.js on port 3000 |
+| Friends can't connect | Check Windows Firewall — allow Node.js on port 4000 |
 | Slow connection | Use ngrok for better routing |
 | Game not loading | Run `npm run build` first |
 

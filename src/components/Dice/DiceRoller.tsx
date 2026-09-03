@@ -37,6 +37,8 @@ export default function DiceRoller({ value, rolling, canRoll, onRoll, currentPla
       {/* Dice face */}
       <button
         id="btn-roll-dice"
+        data-value={value ?? ''}
+        data-can-roll={canRoll}
         className={`${styles.dice} ${rolling ? styles.rolling : ''} ${canRoll ? styles.rollable : ''}`}
         onClick={handleRoll}
         disabled={!canRoll}

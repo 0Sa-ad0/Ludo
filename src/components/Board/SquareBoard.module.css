@@ -8,6 +8,7 @@
     0 0 80px rgba(0,200,255,0.06),
     0 0 0 1px rgba(255,255,255,0.08);
   touch-action: manipulation;
+  animation: fade-in 0.5s ease;
 }
 
 .validGlow {
@@ -16,4 +17,18 @@
 
 .movingPiece {
   animation: piece-move 0.5s ease-out;
+}
+
+.captureFlash {
+  animation: capture-flash 0.4s ease-out 2;
+}
+
+/* Pieces glide to their new square instead of snapping — cx/cy are
+   animatable SVG presentation attributes in modern browsers. */
+.pieceCircle {
+  transition: cx 0.35s cubic-bezier(0.4, 0, 0.2, 1), cy 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pieceGroup {
+  transition: transform 0.2s ease;
 }

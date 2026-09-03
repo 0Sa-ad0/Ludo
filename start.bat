@@ -14,14 +14,14 @@ echo  Make sure XAMPP MySQL is started before playing!
 echo.
 
 REM Start the game server
-echo  [2/3] Starting Ludo Game Server on port 3000...
+echo  [2/3] Starting Ludo Game Server on port 4000...
 echo.
 
 REM Start ngrok in a separate window (if installed)
 where ngrok >nul 2>&1
 if %ERRORLEVEL% == 0 (
     echo  [3/3] Starting ngrok tunnel...
-    start "ngrok" cmd /k "ngrok http 3000"
+    start "ngrok" cmd /k "ngrok http 4000"
     timeout /t 3 /nobreak >nul
     echo  ngrok started! Check the ngrok window for your public URL.
     echo  The public URL will also appear inside the game.
@@ -32,7 +32,7 @@ if %ERRORLEVEL% == 0 (
 
 echo.
 echo  =============================================
-echo    Game running at: http://localhost:3000
+echo    Game running at: http://localhost:4000
 echo    Share the Network URL shown in console
 echo  =============================================
 echo.

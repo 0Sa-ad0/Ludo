@@ -77,7 +77,14 @@
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.08em;
-  animation: pulse-glow 1.5s infinite;
+  display: inline-block;
+  transition: color 0.3s ease;
+}
+
+/* Only pulse when it's actually actionable for this viewer — draws the eye
+   to "your turn" instead of pulsing identically for everyone all the time. */
+.turnText[data-my-turn="true"] {
+  animation: pulse-glow 1.2s infinite, turn-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .gameArea {
@@ -128,6 +135,23 @@
   padding: 8px 20px;
   font-size: 0.85rem;
   color: var(--pink);
+  z-index: 500;
+  animation: slide-up 0.3s ease;
+  white-space: nowrap;
+}
+
+.captureBanner {
+  position: fixed;
+  top: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255,107,0,0.15);
+  border: 1px solid var(--orange);
+  border-radius: var(--radius-sm);
+  padding: 8px 20px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--orange);
   z-index: 500;
   animation: slide-up 0.3s ease;
   white-space: nowrap;

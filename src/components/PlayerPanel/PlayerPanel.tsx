@@ -30,7 +30,12 @@ export default function PlayerPanel({ player, isMyTurn, isMe }: Props) {
         <div className={styles.nameRow}>
           <span className={styles.name} title={player.name}>{player.name}</span>
           {isMe && <span className={styles.youBadge}>YOU</span>}
-          {player.isAuto && !player.isConnected && <span className={styles.autoBadge}>🤖</span>}
+          {!player.isConnected && !player.isAuto && !player.isFinished && (
+            <span className={styles.reconnectingBadge} data-testid={`reconnecting-${player.slotIndex}`} title="Reconnecting…">🔌</span>
+          )}
+          {player.isAuto && !player.isConnected && (
+            <span className={styles.autoBadge} data-testid={`auto-${player.slotIndex}`} title="AUTO — playing on their behalf">🤖</span>
+          )}
           {player.isFinished && player.finishRank && (
             <span className={styles.rankBadge}>#{player.finishRank}</span>
           )}

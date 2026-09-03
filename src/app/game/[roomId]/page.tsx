@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { use, useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type { GameState, Player } from '@/lib/types';
 import { PLAYER_COLORS } from '@/lib/constants';
@@ -14,11 +14,11 @@ import WaitingRoom from '@/components/WaitingRoom/WaitingRoom';
 import styles from './game.module.css';
 
 interface GamePageProps {
-  params: { roomId: string };
+  params: Promise<{ roomId: string }>;
 }
 
 export default function GamePage({ params }: GamePageProps) {
-  const { roomId } = params;
+  const { roomId } = use(params);
   const isCreate = roomId === 'create';
 
   const socketRef = useRef<Socket | null>(null);
@@ -28,7 +28,8 @@ export default function GamePage({ params }: GamePageProps) {
   const [error, setError]                 = useState<string>('');
   const [rollingDice, setRollingDice]     = useState(false);
   const [movingPiece, setMovingPiece]     = useState<string | null>(null);
-  const [lastCapture, setLastCapture]     = useState<string | null>(null);
+  const [capturingPiece, setCapturingPiece] = useState<string | null>(null);
+  const [captureMessage, setCaptureMessage] = useState('');
   const [shareUrl, setShareUrl]           = useState('');
   const [connecting, setConnecting]       = useState(true);
 
@@ -77,13 +78,20 @@ export default function GamePage({ params }: GamePageProps) {
     const socket = io({ path: '/api/socket', transports: ['websocket'] });
     socketRef.current = socket;
 
+    // Remembers this tab's own name/password so a later refresh can rejoin
+    // (by room code) instead of re-running create/join with stale data.
+    let joinInfo: { playerName: string; password?: string } | null = null;
+
     socket.on('connect', () => {
       setConnecting(false);
       if (isCreate) {
         const data = JSON.parse(sessionStorage.getItem('ludo_create') || '{}');
+        joinInfo = { playerName: data.playerName, password: data.password };
         socket.emit('create_room', data);
       } else {
-        const data = JSON.parse(sessionStorage.getItem('ludo_join') || '{}');
+        const stored = sessionStorage.getItem('ludo_room_' + roomId);
+        const data = stored ? JSON.parse(stored) : JSON.parse(sessionStorage.getItem('ludo_join') || '{}');
+        joinInfo = { playerName: data.playerName, password: data.password };
         socket.emit('join_room', { ...data, roomCode: roomId });
       }
     });
@@ -94,10 +102,16 @@ export default function GamePage({ params }: GamePageProps) {
       // Build share URL
       const base = window.location.origin;
       setShareUrl(`${base}/game/${rc}`);
+      // Swap the address bar from /game/create to the real room code — otherwise
+      // a refresh re-triggers isCreate and spins up a brand-new room, stranding
+      // the host's original seat.
+      window.history.replaceState(null, '', `/game/${rc}`);
+      if (joinInfo) sessionStorage.setItem('ludo_room_' + rc, JSON.stringify(joinInfo));
     });
 
     socket.on('joined', ({ playerIndex }: any) => {
       setMyPlayerIndex(playerIndex);
+      if (joinInfo) sessionStorage.setItem('ludo_room_' + roomId, JSON.stringify(joinInfo));
     });
 
     socket.on('game_state', (state: GameState) => {
@@ -110,9 +124,18 @@ export default function GamePage({ params }: GamePageProps) {
       setRollingDice(false);
     });
 
-    socket.on('piece_moved', ({ pieceId, playerIndex, isAuto }: any) => {
+    socket.on('piece_moved', ({ pieceId, playerIndex, isAuto, capturedPieces }: any) => {
       setMovingPiece(pieceId);
-      playMoveSound();
+      if (capturedPieces && capturedPieces.length > 0) {
+        playCaptureSound();
+        const names = [...new Set(capturedPieces.map((c: any) => c.playerName))];
+        setCaptureMessage(`💥 Sent ${names.join(', ')}'s piece home!`);
+        setTimeout(() => setCaptureMessage(''), 2200);
+        setCapturingPiece(pieceId);
+        setTimeout(() => setCapturingPiece(null), 800);
+      } else {
+        playMoveSound();
+      }
       setTimeout(() => setMovingPiece(null), 600);
     });
 
@@ -157,7 +180,24 @@ export default function GamePage({ params }: GamePageProps) {
     );
   }
 
-  if (!gameState) return null;
+  if (!gameState) {
+    return (
+      <div className={styles.centered}>
+        <PingIndicator socket={socketRef.current} />
+        {error ? (
+          <div className={styles.connectingText}>
+            <div className={styles.errorBanner} data-testid="error-banner" style={{ position: 'static', animation: 'none' }}>{error}</div>
+            <a href="/" className="btn btn-secondary" style={{ marginTop: 16 }}>← Back to Lobby</a>
+          </div>
+        ) : (
+          <div className={styles.connectingText}>
+            <div className={styles.spinner} />
+            <span className="font-orbitron">Loading…</span>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if (gameState.status === 'waiting') {
     return (
@@ -177,17 +217,18 @@ export default function GamePage({ params }: GamePageProps) {
     <div className={styles.gamePage}>
       <PingIndicator socket={socketRef.current} />
 
-      {error && <div className={styles.errorBanner}>{error}</div>}
+      {error && <div className={styles.errorBanner} data-testid="error-banner">{error}</div>}
+      {captureMessage && <div className={styles.captureBanner} data-testid="capture-banner">{captureMessage}</div>}
 
       {/* Top bar */}
       <div className={styles.topBar}>
         <div className={styles.roomInfo}>
           <span className={styles.roomLabel}>ROOM</span>
-          <span className={`${styles.roomCode} font-orbitron`}>{roomCode}</span>
+          <span className={`${styles.roomCode} font-orbitron`} data-testid="room-code">{roomCode}</span>
         </div>
         <div className={styles.turnInfo}>
           {gameState.status === 'playing' && (
-            <span className={styles.turnText} style={{ color: PLAYER_COLORS[gameState.players[gameState.currentPlayerIndex]?.colorIndex]?.hex }}>
+            <span className={styles.turnText} data-testid="turn-text" data-my-turn={isMyTurn} style={{ color: PLAYER_COLORS[gameState.players[gameState.currentPlayerIndex]?.colorIndex]?.hex }}>
               {isMyTurn ? '⚡ Your Turn' : `${gameState.players[gameState.currentPlayerIndex]?.name}'s Turn`}
             </span>
           )}
@@ -206,9 +247,9 @@ export default function GamePage({ params }: GamePageProps) {
         {/* Board */}
         <div className={styles.boardContainer}>
           {isHex ? (
-            <HexBoard gameState={gameState} myPlayerIndex={myPlayerIndex} movingPiece={movingPiece} onPieceClick={handleMovePiece} />
+            <HexBoard gameState={gameState} myPlayerIndex={myPlayerIndex} movingPiece={movingPiece} capturingPiece={capturingPiece} onPieceClick={handleMovePiece} />
           ) : (
-            <SquareBoard gameState={gameState} myPlayerIndex={myPlayerIndex} movingPiece={movingPiece} onPieceClick={handleMovePiece} />
+            <SquareBoard gameState={gameState} myPlayerIndex={myPlayerIndex} movingPiece={movingPiece} capturingPiece={capturingPiece} onPieceClick={handleMovePiece} />
           )}
         </div>
 

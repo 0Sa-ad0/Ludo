@@ -195,10 +195,11 @@ interface Props {
   gameState: GameState;
   myPlayerIndex: number;
   movingPiece: string | null;
+  capturingPiece?: string | null;
   onPieceClick: (pieceId: string) => void;
 }
 
-export default function SquareBoard({ gameState, myPlayerIndex, movingPiece, onPieceClick }: Props) {
+export default function SquareBoard({ gameState, myPlayerIndex, movingPiece, capturingPiece, onPieceClick }: Props) {
   const { players, currentPlayerIndex, diceValue, diceRolled } = gameState;
 
   // Compute which pieces can be moved
@@ -319,7 +320,7 @@ export default function SquareBoard({ gameState, myPlayerIndex, movingPiece, onP
               const isValid  = validMoveIds.has(piece.id);
               if (!homePos) return null;
               return (
-                <g key={idx} onClick={() => isValid && onPieceClick(piece.id)} style={{ cursor: isValid ? 'pointer' : 'default' }}>
+                <g key={idx} data-testid={`piece-${piece.id}`} data-valid={isValid} onClick={() => isValid && onPieceClick(piece.id)} style={{ cursor: isValid ? 'pointer' : 'default' }}>
                   {isValid && (
                     <circle cx={homePos[0]} cy={homePos[1]} r={18}
                       fill="rgba(255,255,255,0.08)"
@@ -420,6 +421,7 @@ export default function SquareBoard({ gameState, myPlayerIndex, movingPiece, onP
           const color = PLAYER_COLORS[player.colorIndex];
           const isValid = validMoveIds.has(piece.id);
           const isMoving = piece.id === movingPiece;
+          const isCapturing = piece.id === capturingPiece;
 
           // Stack offset so multiple pieces on same cell are visible
           const offset = items.length > 1 ? (stackIdx - (items.length - 1) / 2) * 10 : 0;
@@ -430,9 +432,11 @@ export default function SquareBoard({ gameState, myPlayerIndex, movingPiece, onP
           return (
             <g
               key={piece.id}
+              data-testid={`piece-${piece.id}`}
+              data-valid={isValid}
               onClick={() => isValid && onPieceClick(piece.id)}
               style={{ cursor: isValid ? 'pointer' : 'default' }}
-              className={isMoving ? styles.movingPiece : ''}
+              className={`${isMoving ? styles.movingPiece : ''} ${isCapturing ? styles.captureFlash : ''}`}
             >
               {isValid && (
                 <circle cx={cx} cy={cy} r={r2 + 5}
@@ -446,11 +450,13 @@ export default function SquareBoard({ gameState, myPlayerIndex, movingPiece, onP
                 fill={color.hex}
                 stroke="#fff"
                 strokeWidth="2"
+                className={styles.pieceCircle}
                 style={{ filter: `drop-shadow(0 0 ${isValid ? 10 : 4}px ${color.hex})` }}
               />
               {/* Piece number */}
               <text x={cx} y={cy} textAnchor="middle" dominantBaseline="central"
-                fontSize="11" fill="#000" fontWeight="bold" style={{ userSelect: 'none', pointerEvents: 'none' }}>
+                fontSize="11" fill="#000" fontWeight="bold" className={styles.pieceCircle}
+                style={{ userSelect: 'none', pointerEvents: 'none' }}>
                 {piece.pieceIndex + 1}
               </text>
             </g>
