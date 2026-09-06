@@ -1,87 +1,126 @@
-# Ludo Game — Setup & Run Guide
+# Ludo — Neon Edition
+
+Real-time multiplayer Ludo for 2–6 players. Next.js + Socket.io, with MySQL for
+the leaderboard.
+
+See **[RULES.md](RULES.md)** for the full game rules.
+
+---
 
 ## Requirements
 
-- **Node.js** 18+ (install from https://nodejs.org)
-- **XAMPP** with MySQL running
-- **ngrok** (optional, for internet access) — https://ngrok.com/download
+- **Node.js** 18+
+- **MySQL** — optional. Without it the game plays fine; you just lose the
+  leaderboard and crash recovery.
+- **ngrok** — optional, for playing across different networks.
 
 ---
 
-## First-Time Setup
+## Setup
 
-### 1. Setup MySQL Database
-
-1. Start **XAMPP** → Start **MySQL**
-2. Open **phpMyAdmin** → http://localhost/phpmyadmin
-3. Click **Import** → select `database/schema.sql`
-4. Click **Go** — this creates the `ludo_game` database
-
-### 2. Configure Environment
-
-Edit `.env.local` if your MySQL settings are different:
-
-```
-DB_HOST=localhost
-DB_PORT=3306
-DB_USER=root
-DB_PASSWORD=        ← add your MySQL password if any
-DB_NAME=ludo_game
-PORT=4000
+```bash
+npm install
+cp .env.example .env.local     # optional — every value has a default
 ```
 
-### 3. Build the Game
+### Database (optional)
 
-Open a terminal in this folder and run:
+Import `database/schema.sql`, either through phpMyAdmin or on the command line:
+
+```bash
+mysql -u root -p < database/schema.sql
+```
+
+Then point `.env.local` at your MySQL if it isn't on `localhost:3306` as `root`
+with no password.
+
+---
+
+## Running
+
+**Linux / macOS**
+
+```bash
+./start.sh              # dev mode, compiles on demand
+```
+
+**Windows**
 
 ```
+start.bat
+```
+
+**Production**
+
+```bash
 npm run build
+NODE_ENV=production node server.js
+```
+
+The server prints both a `localhost` URL and your LAN address:
+
+```
+🎮 Ludo Game running at:
+   Local:   http://localhost:4000
+   Network: http://192.168.1.37:4000  ← Share this on WiFi
 ```
 
 ---
 
-## Running the Game
+## Playing with friends
 
-### Option A: Double-click (Easy)
+**Same WiFi** — share the `Network:` URL, or just the 6-character room code.
 
-Just double-click **`start.bat`** — it starts everything automatically.
+**Different networks** — run `ngrok http 4000` and share the public URL. It also
+appears on the lobby screen.
 
-### Option B: Terminal
-
-```
-node server.js
-```
-
-The game opens at: `http://localhost:4000`
+Either way: create a room, then share the **link** shown in the waiting room.
+Opening it asks for a name and drops the player straight in.
 
 ---
 
-## How to Play with Friends
+## Configuration
 
-### Same WiFi (Local)
-- The terminal shows: `Network: http://192.168.x.x:4000`
-- Share that URL with friends connected to the same WiFi
-- They open it on their phone/browser → Join Room
-
-### Different Networks (Mobile Data)
-1. Install ngrok: https://ngrok.com/download
-2. Run `start.bat` — ngrok starts automatically
-3. The ngrok public URL appears in the ngrok window AND inside the game
-4. Share that URL anywhere (WhatsApp, etc.)
+Everything is env-driven with working defaults — see
+[`.env.example`](.env.example) for the full list, including the reconnect grace
+period, the idle-turn timeout and the room sweep interval.
 
 ---
 
-## Rules Summary
+## Testing
 
-See **RULES.md** for full rules.
+```bash
+npm test          # unit + server integration (Jest)
+npm run test:e2e  # browser end-to-end (Playwright)
+```
 
-Quick version:
-- Roll **6** to bring a piece out of home
-- Roll **6** again = extra turn (unlimited)
-- Land on opponent = they go home (unless safe square ⭐ or block)
-- **Block**: 2+ same-color pieces on same square = protected
-- Exact roll needed to reach center goal
-- Winner watches the rest of the game (spectate mode)
+- `tests/game-logic.test.js` — the rules engine and board geometry, including a
+  simulation that plays out full games at every player count to prove no
+  position can soft-lock.
+- `tests/integration/` — a real `server.js` over real sockets: reconnect/AUTO
+  timers, host controls, validation.
+- `tests/e2e/` — the actual browser flows.
+
+Playwright needs its browser once: `npx playwright install chromium`.
+
+---
+
+## Architecture
+
+```
+server.js              Socket.io server — authoritative, validates every move
+game-logic.js          State transitions (apply move, turn order, game over)
+src/lib/rules.js       ← single source of truth: path lengths, safe squares,
+                         move legality, board geometry. Shared by the server
+                         AND the React components, so the highlight a player
+                         sees can't disagree with what the server accepts.
+src/lib/board.ts       Typed view of rules.js for the components
+src/app/               Next.js App Router pages
+src/components/        Board, dice, panels, waiting room
+```
+
+The client never decides anything. It requests a roll or a move; the server
+checks it against `getValidMoves` and broadcasts the resulting state.
 
 ---
 
@@ -89,10 +128,10 @@ Quick version:
 
 | Problem | Fix |
 |---|---|
-| "DB error" on startup | Start XAMPP MySQL first |
-| Friends can't connect | Check Windows Firewall — allow Node.js on port 4000 |
-| Slow connection | Use ngrok for better routing |
-| Game not loading | Run `npm run build` first |
+| Leaderboard says "unavailable" | MySQL isn't reachable — start it and reload. Games still work. |
+| Friends can't connect | Allow Node.js through the firewall on port 4000 |
+| `EADDRINUSE` | Something else is on port 4000 — set `PORT=4001` |
+| Playwright can't find a browser | `npx playwright install chromium` |
 
 ---
 

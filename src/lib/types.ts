@@ -3,13 +3,18 @@
 export type PieceStatus = 'home' | 'active' | 'finished';
 export type GameStatus  = 'waiting' | 'playing' | 'finished';
 
+/** A [row, col] cell on the square board, or an [x, y] point on the hex board. */
+export type Point = [number, number];
+
 export interface Piece {
-  id: string;           // e.g. "p0_piece0"
+  id: string;            // e.g. "p0_piece0"
   playerIndex: number;
   pieceIndex: number;
   status: PieceStatus;
-  trackPosition: number; // 0–(MAIN_TRACK_LENGTH-1) on main track, or -1 if home
-  pathPosition: number;  // 0 = just entered board, increases along full path, -1 = home
+  /** Absolute square on the shared track, or -1 when off it (home / home column / finished). */
+  trackPosition: number;
+  /** Distance travelled from this player's own start square; -1 while in the home base. */
+  pathPosition: number;
 }
 
 export interface Player {
@@ -23,9 +28,11 @@ export interface Player {
   isAuto: boolean;
   isFinished: boolean;
   finishRank: number | null;
+  isHost: boolean;
   pieces: Piece[];
 }
 
+/** What the server actually puts on the wire — the password hash is stripped. */
 export interface GameState {
   id: string;
   roomCode: string;
@@ -37,37 +44,74 @@ export interface GameState {
   diceRolled: boolean;
   lastMove: MoveEvent | null;
   winner: number | null;
-  rankings: number[];  // player indices in finish order
+  rankings: number[];   // player slot indices, in finish order
+  createdAt?: number;
+  lastActivity?: number;
+}
+
+export interface CapturedPiece {
+  id: string;
+  playerName: string;
 }
 
 export interface MoveEvent {
   playerIndex: number;
   pieceId: string;
-  from: number;
-  to: number;
-  captured: boolean;
-  capturedPieceId?: string;
+  isAuto: boolean;
+  capturedPieces: CapturedPiece[];
+}
+
+// ─── Socket events ────────────────────────────────────────────────────────────
+
+export interface DiceRolledPayload {
+  playerIndex: number;
+  value: number;
+  isAuto?: boolean;
+}
+
+export interface PieceMovedPayload {
+  playerIndex: number;
+  pieceId: string;
+  isAuto?: boolean;
+  capturedPieces: CapturedPiece[];
+}
+
+export interface TurnSkippedPayload {
+  playerIndex: number;
+  value: number;
   isAuto: boolean;
 }
 
-// ─── Socket Events ────────────────────────────────────────────────────────────
 export interface ServerToClientEvents {
-  game_state:       (state: GameState) => void;
-  player_joined:    (player: Player) => void;
-  player_left:      (playerIndex: number) => void;
-  player_auto:      (playerIndex: number) => void;
-  player_reconnected:(playerIndex: number) => void;
-  dice_rolled:      (playerIndex: number, value: number) => void;
-  piece_moved:      (move: MoveEvent) => void;
-  game_over:        (rankings: number[]) => void;
-  error:            (message: string) => void;
-  ping_ack:         (serverTime: number) => void;
-  public_url:       (url: string) => void;
+  game_state:         (state: GameState) => void;
+  game_started:       (state: GameState) => void;
+  room_created:       (payload: { roomCode: string; playerIndex: number }) => void;
+  joined:             (payload: { playerIndex: number }) => void;
+  player_left:        (playerIndex: number) => void;
+  player_auto:        (playerIndex: number) => void;
+  player_reconnected: (playerIndex: number) => void;
+  kicked:             () => void;
+  dice_rolled:        (payload: DiceRolledPayload) => void;
+  piece_moved:        (payload: PieceMovedPayload) => void;
+  turn_skipped:       (payload: TurnSkippedPayload) => void;
+  game_over:          (rankings: number[]) => void;
+  error:              (message: string) => void;
+  ping_ack:           (clientTime: number) => void;
 }
 
 export interface ClientToServerEvents {
-  join_room:    (roomCode: string, playerName: string, password?: string) => void;
-  roll_dice:    () => void;
-  move_piece:   (pieceId: string) => void;
-  ping:         (clientTime: number) => void;
+  create_room: (payload: { playerCount: number; playerName: string; password?: string }) => void;
+  join_room:   (payload: { roomCode: string; playerName: string; password?: string }) => void;
+  start_game:  () => void;
+  kick_player: (payload: { slotIndex: number }) => void;
+  leave_room:  () => void;
+  roll_dice:   () => void;
+  move_piece:  (payload: { pieceId: string }) => void;
+  ping:        (clientTime: number) => void;
+}
+
+/** Stored per-room in sessionStorage so a refresh can rejoin the same seat. */
+export interface StoredJoin {
+  playerName: string;
+  password?: string;
 }

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import Link from 'next/link';
 import type { GameState } from '@/lib/types';
 import { PLAYER_COLORS } from '@/lib/constants';
 import styles from './WinScreen.module.css';
@@ -20,6 +21,8 @@ export default function WinScreen({ gameState, myPlayerIndex }: Props) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    // A canvas animation ignores the CSS reduced-motion override, so check here.
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -102,12 +105,12 @@ export default function WinScreen({ gameState, myPlayerIndex }: Props) {
         )}
 
         <div className={styles.buttons}>
-          <button id="btn-play-again" className="btn btn-primary" onClick={() => window.location.href = '/'}>
+          <Link id="btn-play-again" href="/" className="btn btn-primary">
             🎮 Play Again
-          </button>
-          <button id="btn-leaderboard-win" className="btn btn-secondary" onClick={() => window.location.href = '/leaderboard'}>
+          </Link>
+          <Link id="btn-leaderboard-win" href="/leaderboard" className="btn btn-secondary">
             🏆 Leaderboard
-          </button>
+          </Link>
         </div>
       </div>
     </div>

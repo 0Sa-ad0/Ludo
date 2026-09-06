@@ -1,8 +1,19 @@
 const {
   createInitialState, createPlayer, sanitizeState,
   getValidMoves, applyMove, pathToTrack, getStartSq, getTrackLen,
+  getLoopLen, getGoalPos, getHomeEntrance, isOnTrack, isValidPlayerCount,
+  advanceTurn, skipTurn, finalizeIfOver,
   pickAutoMove, generateRoomCode,
 } = require('../game-logic');
+
+const {
+  SQUARE_TRACK, SQUARE_HOME_COLS, HEX_TRACK, HEX_HOME_COLS, HEX_HOME_BASES,
+  HEX_VIEW,
+} = require('../src/lib/rules');
+
+// The square board is 4 players -> goal 56; the hex board is 6 -> goal 64.
+const GOAL_4 = getGoalPos(4); // 51 track steps + 5 home column
+const GOAL_6 = getGoalPos(6); // 59 track steps + 5 home column
 
 // ─── Test helpers ──────────────────────────────────────────────────────────
 
@@ -14,17 +25,135 @@ function makeState(playerCount, names) {
   return state;
 }
 
-// Puts a piece directly onto the main track at a given pathPosition, bypassing
-// the home-release step, so tests can set up specific board scenarios.
+// Puts a piece directly onto the track at a given pathPosition, bypassing the
+// home-release step, so tests can set up specific board scenarios.
 function placeActive(state, playerIndex, pieceIndex, pathPosition) {
   const piece = state.players[playerIndex].pieces[pieceIndex];
   piece.status = 'active';
   piece.pathPosition = pathPosition;
-  piece.trackPosition = pathPosition < getTrackLen(state.playerCount)
+  piece.trackPosition = isOnTrack(pathPosition, state.playerCount)
     ? pathToTrack(pathPosition, playerIndex, state.playerCount)
     : -1;
   return piece;
 }
+
+const manhattan = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]);
+const dist      = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+// ─── Path model ─────────────────────────────────────────────────────────────
+// REGRESSION: pieces used to walk all 52 track squares instead of 51, which
+// carried them one square PAST their home-column entrance and made the turn
+// into the home column a diagonal jump on the board.
+
+describe('path model', () => {
+  test('a piece walks trackLen - 1 squares, not trackLen', () => {
+    expect(getLoopLen(4)).toBe(getTrackLen(4) - 1);
+    expect(getLoopLen(6)).toBe(getTrackLen(6) - 1);
+    expect(getLoopLen(4)).toBe(51);
+    expect(getLoopLen(6)).toBe(59);
+  });
+
+  test('the goal is loop + home column', () => {
+    expect(GOAL_4).toBe(56);
+    expect(GOAL_6).toBe(64);
+  });
+
+  test('the last on-track position is the home-column entrance', () => {
+    for (const pc of [4, 6]) {
+      const last = getLoopLen(pc) - 1;
+      expect(isOnTrack(last, pc)).toBe(true);
+      expect(isOnTrack(last + 1, pc)).toBe(false); // first home-column step
+      for (let p = 0; p < pc; p++) {
+        expect(pathToTrack(last, p, pc)).toBe(getHomeEntrance(p, pc));
+      }
+    }
+  });
+
+  test('a player never lands on the first square of their own arm', () => {
+    // That square (one before their start) is passed by everyone else but is
+    // exactly the square the off-by-one used to put them on.
+    for (let p = 0; p < 4; p++) {
+      const ownArmFirst = (getStartSq(p, 4) + getTrackLen(4) - 1) % getTrackLen(4);
+      const visited = new Set(
+        Array.from({ length: getLoopLen(4) }, (_, i) => pathToTrack(i, p, 4))
+      );
+      expect(visited.has(ownArmFirst)).toBe(false);
+      expect(visited.size).toBe(51);
+    }
+  });
+});
+
+// ─── Board geometry ─────────────────────────────────────────────────────────
+
+describe('square board geometry', () => {
+  test('the track is 52 distinct cells', () => {
+    expect(SQUARE_TRACK).toHaveLength(52);
+    expect(new Set(SQUARE_TRACK.map((c) => c.join(','))).size).toBe(52);
+  });
+
+  test('each home-column entrance is adjacent to that column\'s first cell', () => {
+    for (let p = 0; p < 4; p++) {
+      const entrance = SQUARE_TRACK[getHomeEntrance(p, 4)];
+      expect(manhattan(entrance, SQUARE_HOME_COLS[p][0])).toBe(1);
+    }
+  });
+
+  test('home columns run in an unbroken line toward the centre', () => {
+    for (let p = 0; p < 4; p++) {
+      const col = SQUARE_HOME_COLS[p];
+      for (let i = 0; i < col.length - 1; i++) {
+        expect(manhattan(col[i], col[i + 1])).toBe(1);
+      }
+    }
+  });
+
+  test('start squares sit where each player\'s arm begins', () => {
+    expect(SQUARE_TRACK[getStartSq(0, 4)]).toEqual([13, 6]);
+    expect(SQUARE_TRACK[getStartSq(1, 4)]).toEqual([6, 1]);
+    expect(SQUARE_TRACK[getStartSq(2, 4)]).toEqual([1, 8]);
+    expect(SQUARE_TRACK[getStartSq(3, 4)]).toEqual([8, 13]);
+  });
+});
+
+describe('hex board geometry', () => {
+  test('the track is 60 evenly spaced cells', () => {
+    expect(HEX_TRACK).toHaveLength(60);
+    const gaps = HEX_TRACK.map((c, i) => dist(c, HEX_TRACK[(i + 1) % 60]));
+    const min = Math.min(...gaps), max = Math.max(...gaps);
+    expect(max - min).toBeLessThan(0.001); // uniform all the way round
+  });
+
+  test('each home column starts next to its entrance and ends near the centre', () => {
+    for (let p = 0; p < 6; p++) {
+      const entrance = HEX_TRACK[getHomeEntrance(p, 6)];
+      expect(dist(entrance, HEX_HOME_COLS[p][0])).toBeLessThan(40);
+      const innermost = HEX_HOME_COLS[p][HEX_HOME_COLS[p].length - 1];
+      expect(dist(innermost, [HEX_VIEW / 2, HEX_VIEW / 2])).toBeLessThan(100);
+    }
+  });
+
+  test('nothing overflows the viewBox', () => {
+    const shapes = [
+      ...HEX_TRACK.map((c) => [c, 16]),
+      ...HEX_HOME_COLS.flat().map((c) => [c, 14]),
+      ...HEX_HOME_BASES.map((c) => [c, 46]),
+    ];
+    for (const [[x, y], r] of shapes) {
+      expect(x - r).toBeGreaterThanOrEqual(0);
+      expect(y - r).toBeGreaterThanOrEqual(0);
+      expect(x + r).toBeLessThanOrEqual(HEX_VIEW);
+      expect(y + r).toBeLessThanOrEqual(HEX_VIEW);
+    }
+  });
+
+  test('home bases do not collide with home columns', () => {
+    for (const base of HEX_HOME_BASES) {
+      for (const cell of HEX_HOME_COLS.flat()) {
+        expect(dist(base, cell)).toBeGreaterThan(46 + 14);
+      }
+    }
+  });
+});
 
 // ─── getValidMoves ─────────────────────────────────────────────────────────
 
@@ -38,17 +167,15 @@ describe('getValidMoves', () => {
 
   test('an active piece can move if it does not overshoot the goal', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    const player = state.players[0];
-    placeActive(state, 0, 0, 50); // 52 (track) + 5 (home col) = 57 is goal; 50+5=55, fits
-    expect(getValidMoves(player, 5, state)).toContain('p0_piece0');
+    placeActive(state, 0, 0, 50);
+    expect(getValidMoves(state.players[0], 5, state)).toContain('p0_piece0'); // 55 <= 56
   });
 
-  test('an active piece cannot move if the roll would overshoot the goal', () => {
+  test('the goal must be reached exactly', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    const player = state.players[0];
-    placeActive(state, 0, 0, 55); // needs exactly 2 to reach 57 (goal)
-    expect(getValidMoves(player, 3, state)).not.toContain('p0_piece0');
-    expect(getValidMoves(player, 2, state)).toContain('p0_piece0'); // exact roll is fine
+    placeActive(state, 0, 0, GOAL_4 - 2); // needs exactly 2
+    expect(getValidMoves(state.players[0], 3, state)).not.toContain('p0_piece0');
+    expect(getValidMoves(state.players[0], 2, state)).toContain('p0_piece0');
   });
 
   test('a finished piece is never a valid move, regardless of roll', () => {
@@ -58,6 +185,11 @@ describe('getValidMoves', () => {
     for (let d = 1; d <= 6; d++) {
       expect(getValidMoves(player, d, state)).not.toContain('p0_piece0');
     }
+  });
+
+  test('no roll means no moves', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    expect(getValidMoves(state.players[0], null, state)).toEqual([]);
   });
 });
 
@@ -76,8 +208,14 @@ describe('applyMove — releasing from home', () => {
   test('rolling a 6 grants a bonus turn — current player does not change', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
     state.currentPlayerIndex = 0;
-    const next = applyMove(state, 0, 'p0_piece0', 6);
-    expect(next.currentPlayerIndex).toBe(0);
+    expect(applyMove(state, 0, 'p0_piece0', 6).currentPlayerIndex).toBe(0);
+  });
+
+  test('the incoming state is never mutated', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    const before = JSON.stringify(state);
+    applyMove(state, 0, 'p0_piece0', 6);
+    expect(JSON.stringify(state)).toBe(before);
   });
 });
 
@@ -87,36 +225,34 @@ describe('applyMove — normal movement', () => {
   test('advances pathPosition and trackPosition by the dice value', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
     placeActive(state, 0, 0, 10);
-    const next = applyMove(state, 0, 'p0_piece0', 4);
-    const piece = next.players[0].pieces[0];
+    const piece = applyMove(state, 0, 'p0_piece0', 4).players[0].pieces[0];
     expect(piece.pathPosition).toBe(14);
     expect(piece.trackPosition).toBe(pathToTrack(14, 0, 4));
   });
 
-  test('entering the home column sets trackPosition to -1', () => {
+  test('entering the home column takes the piece off the shared track', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    placeActive(state, 0, 0, 50); // track length is 52; 50+3=53 is inside home column
-    const next = applyMove(state, 0, 'p0_piece0', 3);
-    const piece = next.players[0].pieces[0];
+    placeActive(state, 0, 0, 50); // 50 is the last track square
+    const piece = applyMove(state, 0, 'p0_piece0', 3).players[0].pieces[0];
     expect(piece.pathPosition).toBe(53);
     expect(piece.trackPosition).toBe(-1);
   });
 
   test('landing exactly on the goal marks the piece finished', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    placeActive(state, 0, 0, 55); // 55 + 2 = 57 = goal (52 + 5)
-    const next = applyMove(state, 0, 'p0_piece0', 2);
-    expect(next.players[0].pieces[0].status).toBe('finished');
+    placeActive(state, 0, 0, GOAL_4 - 2);
+    expect(applyMove(state, 0, 'p0_piece0', 2).players[0].pieces[0].status).toBe('finished');
   });
 
   test('finishing all 4 pieces marks the player finished with a rank', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
     state.players[0].pieces.forEach((p, i) => { if (i > 0) p.status = 'finished'; });
-    placeActive(state, 0, 0, 55);
+    placeActive(state, 0, 0, GOAL_4 - 2);
     const next = applyMove(state, 0, 'p0_piece0', 2);
     expect(next.players[0].isFinished).toBe(true);
     expect(next.players[0].finishRank).toBe(1);
     expect(next.rankings).toEqual([0]);
+    expect(next.winner).toBe(0);
   });
 });
 
@@ -126,11 +262,9 @@ describe('applyMove — capturing', () => {
   test('landing on an opponent piece sends it home', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
     placeActive(state, 0, 0, 10);
-    placeActive(state, 1, 0, 20); // will collide with player 0 landing at pathPos 23 -> track 23
-    // Set player 1's piece to sit exactly at the track square player 0 will land on.
-    const targetTrack = pathToTrack(23, 0, 4);
-    state.players[1].pieces[0].trackPosition = targetTrack;
-    state.players[1].pieces[0].pathPosition = 5; // arbitrary non-home-column value
+    state.players[1].pieces[0].status = 'active';
+    state.players[1].pieces[0].trackPosition = pathToTrack(23, 0, 4);
+    state.players[1].pieces[0].pathPosition = 5;
     const next = applyMove(state, 0, 'p0_piece0', 13); // 10 + 13 = 23
     expect(next.players[1].pieces[0].status).toBe('home');
     expect(next.players[1].pieces[0].trackPosition).toBe(-1);
@@ -141,111 +275,166 @@ describe('applyMove — capturing', () => {
   test('cannot capture your own pieces', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
     placeActive(state, 0, 0, 10);
-    const targetTrack = pathToTrack(15, 0, 4);
     state.players[0].pieces[1].status = 'active';
-    state.players[0].pieces[1].trackPosition = targetTrack;
+    state.players[0].pieces[1].trackPosition = pathToTrack(15, 0, 4);
     state.players[0].pieces[1].pathPosition = 3;
-    const next = applyMove(state, 0, 'p0_piece0', 5); // 10 + 5 = 15
-    expect(next.players[0].pieces[1].status).toBe('active'); // still active, not sent home
+    const next = applyMove(state, 0, 'p0_piece0', 5);
+    expect(next.players[0].pieces[1].status).toBe('active');
     expect(next.lastMove.capturedPieces).toEqual([]);
   });
 
   test('a piece on a safe square cannot be captured', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    // Square-board safe squares include 8. Opponent piece sits there directly.
     state.players[1].pieces[0].status = 'active';
-    state.players[1].pieces[0].trackPosition = 8;
-    state.players[1].pieces[0].pathPosition = 3; // arbitrary, only trackPosition matters here
-    // Player 0 starts at track square 0, so pathPosition N lands on track N directly.
-    placeActive(state, 0, 0, 3);
-    const next = applyMove(state, 0, 'p0_piece0', 5); // 3 + 5 = 8 -> lands on safe square 8
-    expect(next.players[1].pieces[0].status).toBe('active'); // not captured
+    state.players[1].pieces[0].trackPosition = 8; // a marked safe square
+    state.players[1].pieces[0].pathPosition = 3;
+    placeActive(state, 0, 0, 3); // player 0 starts at track 0, so pathPos == track
+    const next = applyMove(state, 0, 'p0_piece0', 5);
+    expect(next.players[1].pieces[0].status).toBe('active');
   });
 
-  test('a block of 2+ same-color pieces cannot be captured', () => {
+  test('a piece standing on its own start square cannot be captured', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    const targetTrack = pathToTrack(15, 0, 4);
     state.players[1].pieces[0].status = 'active';
-    state.players[1].pieces[0].trackPosition = targetTrack;
-    state.players[1].pieces[0].pathPosition = 3;
-    state.players[1].pieces[1].status = 'active';
-    state.players[1].pieces[1].trackPosition = targetTrack;
-    state.players[1].pieces[1].pathPosition = 3;
+    state.players[1].pieces[0].trackPosition = getStartSq(1, 4); // 13
+    state.players[1].pieces[0].pathPosition = 0;
     placeActive(state, 0, 0, 10);
-    const next = applyMove(state, 0, 'p0_piece0', 5); // 10 + 5 = 15
+    const next = applyMove(state, 0, 'p0_piece0', 3); // lands on track 13
+    expect(next.players[1].pieces[0].status).toBe('active');
+  });
+
+  test('a block of 2+ same-colour pieces cannot be captured', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    const target = pathToTrack(15, 0, 4);
+    [0, 1].forEach((i) => {
+      state.players[1].pieces[i].status = 'active';
+      state.players[1].pieces[i].trackPosition = target;
+      state.players[1].pieces[i].pathPosition = 3;
+    });
+    placeActive(state, 0, 0, 10);
+    const next = applyMove(state, 0, 'p0_piece0', 5);
     expect(next.players[1].pieces[0].status).toBe('active');
     expect(next.players[1].pieces[1].status).toBe('active');
     expect(next.lastMove.capturedPieces).toEqual([]);
   });
+
+  test('a piece safe in its home column is out of reach', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    placeActive(state, 1, 0, 52); // in player 1's home column
+    expect(state.players[1].pieces[0].trackPosition).toBe(-1);
+    placeActive(state, 0, 0, 10);
+    const next = applyMove(state, 0, 'p0_piece0', 5);
+    expect(next.players[1].pieces[0].status).toBe('active');
+    expect(next.lastMove.capturedPieces).toEqual([]);
+  });
 });
 
-// ─── applyMove: turn advancement (regression test for the turn-freeze bug) ──
+// ─── Turn advancement ───────────────────────────────────────────────────────
 
 describe('applyMove — turn advancement', () => {
   test('turn passes to the next player on a non-6 roll', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    state.currentPlayerIndex = 0;
     placeActive(state, 0, 0, 10);
-    const next = applyMove(state, 0, 'p0_piece0', 3);
-    expect(next.currentPlayerIndex).toBe(1);
+    expect(applyMove(state, 0, 'p0_piece0', 3).currentPlayerIndex).toBe(1);
   });
 
   test('turn skips players who have already finished', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    state.currentPlayerIndex = 0;
     state.players[1].isFinished = true;
     placeActive(state, 0, 0, 10);
-    const next = applyMove(state, 0, 'p0_piece0', 3);
-    expect(next.currentPlayerIndex).toBe(2);
+    expect(applyMove(state, 0, 'p0_piece0', 3).currentPlayerIndex).toBe(2);
   });
 
   test('rolling a 6 keeps the turn with the same player (bonus roll)', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    state.currentPlayerIndex = 0;
     placeActive(state, 0, 0, 10);
-    const next = applyMove(state, 0, 'p0_piece0', 6);
-    expect(next.currentPlayerIndex).toBe(0);
+    expect(applyMove(state, 0, 'p0_piece0', 6).currentPlayerIndex).toBe(0);
   });
 
-  // Regression test: previously, finishing your last piece with a roll of
-  // exactly 6 left currentPlayerIndex stuck on the now-finished player
-  // forever, soft-locking the game since a finished player can never roll.
+  // REGRESSION: finishing your last piece with a roll of exactly 6 left
+  // currentPlayerIndex stuck on the now-finished player for ever, soft-locking
+  // the game since a finished player can never roll.
   test('REGRESSION: finishing the game with a roll of 6 still advances the turn', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    state.currentPlayerIndex = 0;
     state.players[0].pieces.forEach((p, i) => { if (i > 0) p.status = 'finished'; });
-    placeActive(state, 0, 0, 51); // 51 + 6 = 57 = goal
+    placeActive(state, 0, 0, GOAL_4 - 6);
     const next = applyMove(state, 0, 'p0_piece0', 6);
     expect(next.players[0].isFinished).toBe(true);
-    expect(next.currentPlayerIndex).not.toBe(0);
     expect(next.currentPlayerIndex).toBe(1);
   });
 
   test('REGRESSION: finishing the game on 6 still skips already-finished players', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    state.currentPlayerIndex = 0;
     state.players[0].pieces.forEach((p, i) => { if (i > 0) p.status = 'finished'; });
     state.players[1].isFinished = true;
-    placeActive(state, 0, 0, 51);
-    const next = applyMove(state, 0, 'p0_piece0', 6);
-    expect(next.currentPlayerIndex).toBe(2);
+    placeActive(state, 0, 0, GOAL_4 - 6);
+    expect(applyMove(state, 0, 'p0_piece0', 6).currentPlayerIndex).toBe(2);
   });
 });
 
-// ─── applyMove: game-over conditions ────────────────────────────────────────
+describe('advanceTurn / skipTurn', () => {
+  test('advanceTurn wraps around the table', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    advanceTurn(state, 3);
+    expect(state.currentPlayerIndex).toBe(0);
+  });
 
-describe('applyMove — game over', () => {
+  test('advanceTurn terminates even when everyone is finished', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    state.players.forEach((p) => { p.isFinished = true; });
+    advanceTurn(state, 0); // must not hang
+    expect(typeof state.currentPlayerIndex).toBe('number');
+  });
+
+  test('skipTurn passes the turn on a non-6 and clears the dice', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    state.diceValue = 3; state.diceRolled = true;
+    skipTurn(state, 0, 3);
+    expect(state.currentPlayerIndex).toBe(1);
+    expect(state.diceRolled).toBe(false);
+    expect(state.diceValue).toBeNull();
+  });
+
+  test('skipTurn on a 6 keeps the turn (the bonus roll still applies)', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    skipTurn(state, 0, 6);
+    expect(state.currentPlayerIndex).toBe(0);
+  });
+});
+
+// ─── Game over ──────────────────────────────────────────────────────────────
+
+describe('game over', () => {
   test('game ends when only one player remains unfinished', () => {
     const state = makeState(3, ['A', 'B', 'C']);
     state.players[1].isFinished = true;
     state.players[1].finishRank = 1;
     state.rankings = [1];
-    // Player 2 finishes now, leaving only player 0 active -> game auto-ends for player 0 too.
     state.players[2].pieces.forEach((p, i) => { if (i > 0) p.status = 'finished'; });
-    placeActive(state, 2, 0, 55); // track length for 3 players is the square board (52)
-    const next = applyMove(state, 2, 'p2_piece0', 2); // reaches goal exactly
+    placeActive(state, 2, 0, GOAL_4 - 2);
+    const next = applyMove(state, 2, 'p2_piece0', 2);
     expect(next.status).toBe('finished');
-    expect(next.players[0].isFinished).toBe(true); // last remaining player auto-finished
+    expect(next.players[0].isFinished).toBe(true); // straggler gets the last rank
+    expect(next.winner).toBe(1);
+  });
+
+  test('finalizeIfOver leaves a live game alone', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    finalizeIfOver(state);
+    expect(state.status).toBe('waiting');
+  });
+});
+
+// ─── Validation ─────────────────────────────────────────────────────────────
+
+describe('isValidPlayerCount', () => {
+  test('accepts 2 through 6', () => {
+    [2, 3, 4, 5, 6].forEach((n) => expect(isValidPlayerCount(n)).toBe(true));
+  });
+
+  test('rejects everything else', () => {
+    [0, 1, 7, 99, -3, 2.5, NaN, null, undefined, '4', {}].forEach((n) =>
+      expect(isValidPlayerCount(n)).toBe(false));
   });
 });
 
@@ -255,52 +444,51 @@ describe('sanitizeState', () => {
   test('strips passwordHash from the broadcast state', () => {
     const state = createInitialState('TEST01', 4, 'some-bcrypt-hash');
     const sanitized = sanitizeState(state);
-    expect(sanitized.passwordHash).toBeUndefined();
     expect('passwordHash' in sanitized).toBe(false);
-    // Original state object is untouched.
-    expect(state.passwordHash).toBe('some-bcrypt-hash');
+    expect(state.passwordHash).toBe('some-bcrypt-hash'); // original untouched
   });
 
   test('keeps every other field intact', () => {
-    const state = createInitialState('TEST01', 4, 'hash');
-    const sanitized = sanitizeState(state);
+    const sanitized = sanitizeState(createInitialState('TEST01', 4, 'hash'));
     expect(sanitized.roomCode).toBe('TEST01');
     expect(sanitized.playerCount).toBe(4);
     expect(sanitized.status).toBe('waiting');
   });
 });
 
-// ─── Hex board (5-6 players) sanity checks ──────────────────────────────────
+// ─── Hex board rules ────────────────────────────────────────────────────────
 
-describe('hex board (5-6 players)', () => {
-  test('uses a 60-square track and different start squares than the square board', () => {
-    const state = makeState(6, ['A', 'B', 'C', 'D', 'E', 'F']);
+describe('hex board (5–6 players)', () => {
+  test('uses a 60-square track and evenly spread start squares', () => {
     expect(getTrackLen(6)).toBe(60);
     expect(getStartSq(2, 6)).toBe(20);
   });
 
   test('capture and finish logic works the same way on the hex board', () => {
     const state = makeState(6, ['A', 'B', 'C', 'D', 'E', 'F']);
-    placeActive(state, 0, 0, 58); // 60 (track) + 5 (home col) = 65 is goal; 58+7=65
-    const next = applyMove(state, 0, 'p0_piece0', 7);
-    expect(next.players[0].pieces[0].status).toBe('finished');
+    placeActive(state, 0, 0, GOAL_6 - 6);
+    expect(applyMove(state, 0, 'p0_piece0', 6).players[0].pieces[0].status).toBe('finished');
+  });
+
+  test('a 5-player game still uses the hex board', () => {
+    expect(getTrackLen(5)).toBe(60);
+    expect(getGoalPos(5)).toBe(GOAL_6);
   });
 });
 
-// ─── pickAutoMove (AUTO-mode piece selection) ───────────────────────────────
+// ─── pickAutoMove ───────────────────────────────────────────────────────────
 
 describe('pickAutoMove', () => {
   test('returns null when there are no valid moves', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    expect(pickAutoMove(state.players[0], 3, state)).toBeNull(); // all pieces home, rolled non-6
+    expect(pickAutoMove(state.players[0], 3, state)).toBeNull();
   });
 
   test('only ever picks from the actual valid-move set', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
     const player = state.players[0];
     for (let i = 0; i < 20; i++) {
-      const pick = pickAutoMove(player, 6, state);
-      expect(getValidMoves(player, 6, state)).toContain(pick);
+      expect(getValidMoves(player, 6, state)).toContain(pickAutoMove(player, 6, state));
     }
   });
 
@@ -327,6 +515,30 @@ describe('generateRoomCode', () => {
   test('excludes visually-ambiguous characters (0, O, 1, I)', () => {
     for (let i = 0; i < 50; i++) {
       expect(generateRoomCode()).not.toMatch(/[01OI]/);
+    }
+  });
+});
+
+// ─── A full game must always terminate ──────────────────────────────────────
+
+describe('simulation', () => {
+  test('a fully automatic game always reaches a finished state', () => {
+    for (const pc of [2, 3, 4, 5, 6]) {
+      const state = makeState(pc, ['A', 'B', 'C', 'D', 'E', 'F'].slice(0, pc));
+      let s = state;
+      s.status = 'playing';
+      let turns = 0;
+      while (s.status !== 'finished' && turns < 20000) {
+        turns++;
+        const pi = s.currentPlayerIndex;
+        const value = Math.floor(Math.random() * 6) + 1;
+        const pieceId = pickAutoMove(s.players[pi], value, s);
+        if (pieceId) s = applyMove(s, pi, pieceId, value);
+        else skipTurn(s, pi, value);
+      }
+      expect(s.status).toBe('finished');
+      expect(s.rankings).toHaveLength(pc);
+      expect(new Set(s.rankings).size).toBe(pc); // everyone ranked exactly once
     }
   });
 });

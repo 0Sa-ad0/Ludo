@@ -1,77 +1,84 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import styles from './DiceRoller.module.css';
 
-const DOTS: Record<number, number[][]> = {
+const DOTS: Record<number, [number, number][]> = {
   1: [[50, 50]],
-  2: [[25, 25], [75, 75]],
-  3: [[25, 25], [50, 50], [75, 75]],
-  4: [[25, 25], [75, 25], [25, 75], [75, 75]],
-  5: [[25, 25], [75, 25], [50, 50], [25, 75], [75, 75]],
-  6: [[25, 22], [75, 22], [25, 50], [75, 50], [25, 78], [75, 78]],
+  2: [[28, 28], [72, 72]],
+  3: [[28, 28], [50, 50], [72, 72]],
+  4: [[28, 28], [72, 28], [28, 72], [72, 72]],
+  5: [[28, 28], [72, 28], [50, 50], [28, 72], [72, 72]],
+  6: [[28, 24], [72, 24], [28, 50], [72, 50], [28, 76], [72, 76]],
 };
 
 interface Props {
   value: number | null;
   rolling: boolean;
   canRoll: boolean;
+  /** Rolled already, now choosing which piece to move. */
+  waitingForMove?: boolean;
   onRoll: () => void;
   currentPlayerColor: string;
 }
 
-export default function DiceRoller({ value, rolling, canRoll, onRoll, currentPlayerColor }: Props) {
-  const [animKey, setAnimKey] = useState(0);
+export default function DiceRoller({
+  value, rolling, canRoll, waitingForMove, onRoll, currentPlayerColor,
+}: Props) {
+  // Cycle the face while tumbling so the dice reads as *rolling* rather than
+  // just spinning on its final value.
+  const [face, setFace] = useState(1);
 
-  function handleRoll() {
-    if (!canRoll) return;
-    setAnimKey(k => k + 1);
-    onRoll();
-  }
+  useEffect(() => {
+    if (!rolling) return;
+    const id = setInterval(() => setFace(1 + Math.floor(Math.random() * 6)), 80);
+    return () => clearInterval(id);
+  }, [rolling]);
 
-  const displayValue = value ?? 1;
-  const dots = DOTS[displayValue] || DOTS[1];
+  const shown = rolling ? face : (value ?? 1);
+  const dots  = DOTS[shown] ?? DOTS[1];
 
   return (
     <div className={styles.wrapper}>
-      {/* Dice face */}
       <button
         id="btn-roll-dice"
         data-value={value ?? ''}
         data-can-roll={canRoll}
+        data-rolling={rolling}
         className={`${styles.dice} ${rolling ? styles.rolling : ''} ${canRoll ? styles.rollable : ''}`}
-        onClick={handleRoll}
+        onClick={onRoll}
         disabled={!canRoll}
-        aria-label={canRoll ? 'Roll dice' : `Dice shows ${displayValue}`}
+        aria-label={canRoll ? 'Roll dice' : value !== null ? `Dice shows ${value}` : 'Dice'}
+        aria-live="polite"
         style={{ '--player-color': currentPlayerColor } as React.CSSProperties}
-        key={animKey}
       >
-        <svg viewBox="0 0 100 100" className={styles.diceSvg}>
-          <rect x="4" y="4" width="92" height="92" rx="18" ry="18"
-            fill="var(--bg-card2)"
-            stroke={currentPlayerColor}
-            strokeWidth="3"
-            className={styles.diceRect}
+        <svg viewBox="0 0 100 100" className={styles.diceSvg} aria-hidden>
+          <rect
+            x={4} y={4} width={92} height={92} rx={18} ry={18}
+            fill="var(--bg-card2)" stroke={currentPlayerColor} strokeWidth={3}
+            style={{ filter: `drop-shadow(0 0 8px ${currentPlayerColor})` }}
           />
           {dots.map(([cx, cy], i) => (
-            <circle
-              key={i}
-              cx={cx} cy={cy} r="8"
-              fill={currentPlayerColor}
-              className={styles.diceDot}
-              style={{ filter: `drop-shadow(0 0 4px ${currentPlayerColor})` }}
-            />
+            <circle key={i} cx={cx} cy={cy} r={8} fill={currentPlayerColor}
+              style={{ filter: `drop-shadow(0 0 4px ${currentPlayerColor})` }} />
           ))}
         </svg>
       </button>
 
       <div className={styles.hint}>
-        {canRoll
-          ? <span className={styles.tapHint} style={{ color: currentPlayerColor }}>TAP TO ROLL</span>
-          : value !== null
-            ? <span className={styles.rolled}>Rolled <strong>{value}</strong></span>
-            : <span className={styles.waiting}>Waiting…</span>
-        }
+        {rolling ? (
+          <span className={styles.waiting}>Rolling…</span>
+        ) : canRoll ? (
+          <span className={styles.tapHint} style={{ color: currentPlayerColor }}>TAP TO ROLL</span>
+        ) : waitingForMove ? (
+          <span className={styles.tapHint} style={{ color: currentPlayerColor }}>
+            PICK A PIECE {value !== null && `· ${value}`}
+          </span>
+        ) : value !== null ? (
+          <span className={styles.rolled}>Rolled <strong>{value}</strong></span>
+        ) : (
+          <span className={styles.waiting}>Waiting…</span>
+        )}
       </div>
     </div>
   );

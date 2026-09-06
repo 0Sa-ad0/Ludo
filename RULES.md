@@ -1,26 +1,27 @@
 # Ludo Game — Rules Reference
 
-> This document is for developers who will play and test the game.
-> Review these rules carefully before your first game session.
+> This document is the spec the code implements. If the two ever disagree,
+> that's a bug — the rules themselves live in one place, `src/lib/rules.js`,
+> which both the server and the board components import.
 
 ---
 
 ## 🎯 Objective
 
-Be the **first player** to move all **4 of your pieces** from your home base, around the board, and into the center goal.
+Be the **first player** to move all **4 of your pieces** from your home base, around the board, and into the centre goal.
 
 ---
 
 ## 👥 Players
 
 - **2 to 6 players** supported
-- Each player picks a color and a custom name before the game
-- **2–4 players** → Classic square board
-- **5–6 players** → Hexagonal board (6-arm star shape)
+- Each player picks a name before the game
+- **2–4 players** → classic square board (52-square track)
+- **5–6 players** → hexagonal board (6-arm star, 60-square track)
 
-### Player Colors
+### Player Colours
 
-| Player Slot | Color |
+| Slot | Colour |
 |---|---|
 | Player 1 | 🩷 Neon Pink |
 | Player 2 | 💙 Electric Blue |
@@ -29,130 +30,172 @@ Be the **first player** to move all **4 of your pieces** from your home base, ar
 | Player 5 | 💜 Neon Purple |
 | Player 6 | 💛 Neon Yellow |
 
-> When fewer than 6 players play, unused corners/arms are grayed out on the board.
+Unused corners/arms are greyed out and labelled EMPTY.
 
 ---
 
 ## 🏠 Home Base
 
-- Each player starts with **4 pieces** in their **home base** (colored corner area)
-- Pieces in the home base are **off the board** — they cannot move until released
-- To release a piece onto the board, you must **roll a 6**
+- Each player starts with **4 pieces** in their home base
+- Pieces there are off the board and cannot move until released
+- Releasing a piece requires a roll of **6**
 
 ---
 
-## 🎲 Rolling the Dice
+## 🎲 Rolling
 
-1. On your turn, tap/click the **Roll** button
-2. The dice animates and shows a number (1–6)
+1. On your turn, tap the **Roll** button
+2. The dice tumbles and settles on 1–6
 3. Move **one** of your pieces forward by that number
-4. **Rolling a 6** = you get a **bonus extra roll** after your move
-   - There is **no limit** on consecutive 6s — keep rolling and moving as long as you roll 6
-5. If you have **no valid moves** (e.g., all pieces are blocked or haven't been released), your turn is automatically **skipped**
+4. **Rolling a 6** earns a **bonus roll** after your move — unlimited consecutive 6s
+5. If you have **no legal move**, your turn is skipped automatically and everyone
+   is told why (`🎲 4 — no legal move`)
 
 ---
 
 ## 🚀 Releasing a Piece
 
-- You must roll a **6** to move a piece from home base onto the board
-- The piece is placed on your **starting square** (the square just outside your home base)
-- Your starting square is always a **safe square** ⭐
-- You still get your bonus roll after releasing a piece (since you rolled a 6)
+- Roll a **6** to move a piece from the home base onto your **start square**
+- Your start square is always **safe** ⭐
+- You still get the bonus roll, since you rolled a 6
 
 ---
 
-## 🔄 Moving Around the Board
+## 🔄 The Path
 
-- Pieces move **clockwise** around the outer track
-- Each piece travels the full loop and then turns into its **home column** (the colored path leading to the center)
-- Only **your own pieces** can enter your home column — opponents cannot enter it
+- Pieces move **clockwise** around the shared outer track
+- A piece walks **51 squares** on the square board (**59** on hex) and then
+  turns into its own **home column**
+- That is one square *short* of a full lap, by design: the square just before
+  your start square is your home-column entrance, so you turn in rather than
+  passing your own front door. The first square of your own arm is the one
+  square you never land on — other players still pass through it.
+- Only your own pieces may enter your home column
+
+### Total distance
+
+| Board | Track steps | Home column | Total to goal |
+|---|---|---|---|
+| Square (2–4) | 51 | 5 | **56** |
+| Hex (5–6) | 59 | 5 | **64** |
 
 ---
 
 ## ⭐ Safe Squares
 
-- Certain squares on the board are marked with a **star (⭐)**
-- A piece on a safe square **cannot be captured**, ever
-- Safe squares include:
-  - Every player's **starting square**
-  - Several additional marked squares distributed around the board
+- Marked with a star ⭐
+- A piece on a safe square **can never be captured**
+- Safe squares are: every player's **start square**, plus the square **8 steps
+  past** each start
 
 ---
 
-## ⚔️ Capturing (Cutting)
+## ⚔️ Capturing
 
-- If your piece lands on a square occupied by an **opponent's piece** (that is NOT a safe square) → that opponent's piece is **sent back to their home base**
-- The captured player must roll a 6 again to re-release that piece
-- You **cannot** capture your own pieces
-
----
-
-## 🧱 Blocking Rule
-
-- If **2 or more pieces of the same player** are on the same square → they form a **Block**
-- A blocked square **cannot be captured** — no opponent can send those pieces home
-- However, opponents **can still pass through** a block (they are not stuck behind it)
-- Blocks apply to all squares, including non-safe ones
+- Landing on a square holding an **opponent's** piece sends that piece back to
+  their home base — unless the square is safe, or the piece is part of a block
+- The captured player must roll a 6 again to re-release it
+- You can never capture your own pieces
+- Pieces in a home column are off the shared track and cannot be captured
 
 ---
 
-## 🏁 Entering the Home Column & Goal
+## 🧱 Blocking
 
-- Your **home column** is the 5-square colored path leading to the center goal
-- Only your own pieces can enter your home column
-- You must roll the **exact number** to move a piece into the center goal
-  - Example: if a piece is **3 steps away** from the goal, you must roll exactly **3**
-  - If you roll more than needed, you cannot move that piece — pick another piece or skip
-- Once a piece reaches the center goal, it is **finished** — it cannot be moved or captured
+- **2 or more pieces of the same player** on one square form a **block**
+- A block **cannot be captured**
+- Opponents **can still pass through** a block — it does not stop movement
+- Blocks are shown with a white ring on the piece
+
+---
+
+## 🏁 Reaching the Goal
+
+- The home column is 5 squares; the goal sits at the end
+- You must roll the **exact** number to land on the goal
+  - 3 steps from the goal means you need exactly a 3
+  - Overshooting is not a legal move — pick another piece, or the turn is skipped
+- A piece in the goal is **finished**: it cannot move or be captured
 
 ---
 
 ## 🏆 Winning & Spectating
 
-- The **first player** to get all 4 pieces into the center goal wins (**1st place**)
-- The game **does not end** — remaining players continue to determine 2nd, 3rd, 4th (and 5th, 6th) place
-- **1st place winner stays on screen** with a 👑 **Spectating** badge — they can watch the rest of the game
-- The winner's turns are automatically skipped
+- The first player to bring all 4 pieces home takes **1st place**
+- The game **continues** so the remaining places are decided
+- A finished player keeps watching, with a 👑 **Spectating** badge, and their
+  turns are skipped
+- When only one player is left, they are awarded the final place and the game ends
 
 ---
 
 ## 🌐 Multiplayer & Connection
 
-- Each player joins on their **own device** via a shared link
-- The host creates the room and shares the link (e.g., via WhatsApp)
-- An **optional room password** can be set for privacy
+- Each player joins on their own device
+- The host creates the room and shares the **room code** or the **link**
+- Opening the link asks for your name, then drops you straight into the room
+- An optional room password can be set
 
-### If a Player Disconnects
+### Host controls (lobby only)
 
-| Time | What Happens |
+- **Start early** — begin with however many players have turned up (minimum 2).
+  The board resizes to match, so a 6-seat room started with 3 plays on the
+  square board.
+- **Remove a player** — free a seat; remaining players close up the gap
+
+### If a player disconnects
+
+| Time | What happens |
 |---|---|
-| 0–30 seconds | "Reconnecting…" banner shown — that player's turn is paused |
-| After 30 seconds | Player switches to **AUTO mode** |
-| Player returns | Instantly takes back control on their next turn |
+| 0–30 s | 🔌 "Reconnecting…" badge; their turn is held |
+| After 30 s | Player switches to 🤖 **AUTO** |
+| They return | They take back control immediately |
 
-### AUTO Mode
+### If a player just goes idle
 
-- When a player is disconnected for more than 30 seconds, AUTO takes over
-- AUTO is **not AI** — it uses simple random logic: it randomly picks any valid move
-- AUTO follows all the real game rules — it will not make illegal moves
-- Goal of AUTO: keep the game moving so other players are not blocked
+A **connected** player who does nothing for **45 seconds** has that turn played
+for them. Without this, one person walking away from their phone freezes the
+room for everybody else.
+
+### AUTO mode
+
+- Not AI: it picks uniformly at random from the legal moves
+- It cannot make an illegal move — it uses the same rule function the server
+  validates human moves with
+- Its only job is to keep the game moving
 
 ---
 
 ## 📡 Connection Quality
 
-- A **ping indicator** is visible in the top-right corner on every screen
-- Shows your exact connection latency: e.g., `47ms`
-- Updates every second
-- Color changes: green (fast) → yellow (moderate) → red (slow)
+- A ping indicator sits in the top-right of every screen that has a connection
+- Updates every second; green → yellow → red as latency rises
+
+---
+
+## 🎛️ In-game controls
+
+| Control | What it does |
+|---|---|
+| 🔊 / 🔇 | Mute or unmute sound (remembered on this device) |
+| 🚪 | Leave the game (mid-game your seat is handed to AUTO) |
 
 ---
 
 ## 🗃️ Leaderboard
 
-- A shared leaderboard tracks **wins** and **games played** for all players
-- Data is stored on the host's MySQL database — one leaderboard for everyone
-- Accessible from the main menu at any time
+- Tracks **wins** and **games played** by player name
+- Stored in the host's MySQL database
+- If the database isn't running, the game still plays — the leaderboard just
+  reports itself unavailable
+
+---
+
+## ♿ Accessibility
+
+- Movable pieces are keyboard-reachable (Tab, then Enter/Space)
+- Pinch-zoom is not blocked
+- `prefers-reduced-motion` disables the pulsing glows, dice tumble and confetti
 
 ---
 

@@ -16,13 +16,18 @@ export default function LeaderboardPage() {
   const router = useRouter();
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [unavailable, setUnavailable] = useState(false);
   const [sortBy, setSortBy] = useState<'wins' | 'games_played' | 'win_rate'>('wins');
 
   useEffect(() => {
     fetch('/api/leaderboard')
-      .then(r => r.json())
-      .then(d => { setEntries(d.entries || []); setLoading(false); })
-      .catch(() => setLoading(false));
+      .then((r) => r.json())
+      .then((d) => {
+        setEntries(d.entries || []);
+        setUnavailable(!!d.unavailable);
+        setLoading(false);
+      })
+      .catch(() => { setUnavailable(true); setLoading(false); });
   }, []);
 
   const sorted = [...entries].sort((a, b) => b[sortBy] - a[sortBy]);
@@ -58,6 +63,15 @@ export default function LeaderboardPage() {
         <div className={styles.loading}>
           <div className={styles.spinner} />
           <span>Loading…</span>
+        </div>
+      ) : unavailable ? (
+        // Distinct from "no games yet" on purpose — a database that isn't
+        // running shouldn't look like a wiped history.
+        <div className={styles.empty} data-testid="leaderboard-unavailable">
+          <p>Leaderboard unavailable.</p>
+          <p className={styles.emptyHint}>
+            The database isn&apos;t reachable — start MySQL and reload. Games still play fine without it.
+          </p>
         </div>
       ) : entries.length === 0 ? (
         <div className={styles.empty}>

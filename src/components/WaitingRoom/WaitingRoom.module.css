@@ -40,7 +40,20 @@
 
 .urlLabel { font-size: 0.65rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap; }
 
-.url { flex: 1; font-size: 0.72rem; color: var(--green); word-break: break-all; font-family: monospace; }
+/* One line with an ellipsis rather than break-all, which used to split the
+   room code across two lines mid-word. The copy button is right there. */
+.url {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.72rem;
+  color: var(--green);
+  font-family: monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;      /* keep the room code visible, truncate the host part */
+  text-align: left;
+}
 
 .playersList { display: flex; flex-direction: column; gap: 8px; }
 
@@ -70,6 +83,25 @@
   border: 1px solid var(--pink);
   border-radius: 4px;
   padding: 2px 5px;
+}
+
+.hostBadge { font-size: 0.8rem; line-height: 1; }
+
+.kickBtn {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  font-size: 0.72rem;
+  line-height: 1;
+  transition: var(--transition);
+}
+.kickBtn:hover {
+  color: var(--pink);
+  border-color: var(--pink);
+  background: rgba(255,45,120,0.1);
 }
 
 .spinner2 {

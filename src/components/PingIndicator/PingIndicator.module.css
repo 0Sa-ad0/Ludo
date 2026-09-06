@@ -1,6 +1,0 @@
-/* Uses global .ping-indicator styles from globals.css */
-.good    { color: var(--green);  }
-.good    .pingDot { background: var(--green); }
-.fair    { color: var(--yellow); }
-.bad     { color: var(--pink);   }
-.offline { color: #555; }

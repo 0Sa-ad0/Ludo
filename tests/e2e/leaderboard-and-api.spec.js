@@ -1,13 +1,15 @@
 const { test, expect } = require('@playwright/test');
 
 test.describe('API routes', () => {
-  test('GET /api/leaderboard returns a well-formed (possibly empty) entries array', async ({ request }) => {
+  test('GET /api/leaderboard degrades gracefully when the database is missing', async ({ request }) => {
     const res = await request.get('/api/leaderboard');
     expect(res.ok()).toBe(true);
     const body = await res.json();
     expect(Array.isArray(body.entries)).toBe(true);
-    // The E2E test DB doesn't exist, so this should be gracefully empty, not an error page.
+    // The E2E test DB doesn't exist: empty results, a 200, and an explicit
+    // flag so the UI can say "unavailable" rather than "no games yet".
     expect(body.entries).toEqual([]);
+    expect(body.unavailable).toBe(true);
   });
 
   test('GET /api/public-url returns null when ngrok is not running', async ({ request }) => {
@@ -19,13 +21,14 @@ test.describe('API routes', () => {
 });
 
 test.describe('Leaderboard page', () => {
-  test('loads without errors and shows the empty state when there are no games yet', async ({ page }) => {
+  test('loads without errors and reports that the database is unreachable', async ({ page }) => {
     const pageErrors = [];
     page.on('pageerror', (err) => pageErrors.push(err.message));
 
     await page.goto('/leaderboard');
     await expect(page.getByText('🏆 Leaderboard')).toBeVisible();
-    await expect(page.getByText('No games played yet.')).toBeVisible({ timeout: 5000 });
+    // The E2E server points at a database that doesn't exist.
+    await expect(page.getByTestId('leaderboard-unavailable')).toBeVisible({ timeout: 5000 });
 
     expect(pageErrors).toEqual([]);
   });

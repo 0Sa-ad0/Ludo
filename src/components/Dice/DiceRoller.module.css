@@ -24,19 +24,13 @@
 
 .rollable:active { transform: scale(0.9); }
 
+/* Loops while the roll is in flight — a single pass used to end long before
+   the dice settled, leaving it visibly frozen mid-turn. */
 .rolling {
-  animation: dice-roll 0.7s ease-out forwards !important;
+  animation: dice-roll 0.6s linear infinite !important;
 }
 
 .diceSvg { width: 100%; height: 100%; }
-
-.diceRect {
-  filter: drop-shadow(0 0 8px var(--player-color, var(--pink)));
-}
-
-.diceDot {
-  animation: fade-in 0.15s ease;
-}
 
 .hint {
   font-family: 'Orbitron', sans-serif;

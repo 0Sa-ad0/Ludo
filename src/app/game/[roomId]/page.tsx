@@ -1,9 +1,17 @@
 'use client';
 
-import { use, useEffect, useRef, useState, useCallback } from 'react';
+import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
-import type { GameState, Player } from '@/lib/types';
-import { PLAYER_COLORS } from '@/lib/constants';
+import type {
+  GameState, DiceRolledPayload, PieceMovedPayload, TurnSkippedPayload, StoredJoin,
+} from '@/lib/types';
+import {
+  PLAYER_COLORS, STORAGE_CREATE, STORAGE_ROOM, STORAGE_NAME,
+  DICE_ROLL_MIN_MS, ROLL_TIMEOUT_MS, TOAST_MS, MOVE_ANIM_MS,
+} from '@/lib/constants';
+import { useSound } from '@/lib/useSound';
 import PingIndicator from '@/components/PingIndicator/PingIndicator';
 import SquareBoard from '@/components/Board/SquareBoard';
 import HexBoard from '@/components/Board/HexBoard';
@@ -11,271 +19,430 @@ import DiceRoller from '@/components/Dice/DiceRoller';
 import PlayerPanel from '@/components/PlayerPanel/PlayerPanel';
 import WinScreen from '@/components/WinScreen/WinScreen';
 import WaitingRoom from '@/components/WaitingRoom/WaitingRoom';
+import JoinPrompt from '@/components/JoinPrompt/JoinPrompt';
 import styles from './game.module.css';
 
 interface GamePageProps {
   params: Promise<{ roomId: string }>;
 }
 
+function readStored<T>(key: string): T | null {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch { return null; }
+}
+
 export default function GamePage({ params }: GamePageProps) {
   const { roomId } = use(params);
   const isCreate = roomId === 'create';
+  const router = useRouter();
 
+  // The ref is for imperative use inside callbacks; the state copy is what
+  // render passes down, since reading a ref during render isn't allowed (and
+  // wouldn't re-render PingIndicator when the socket first appears anyway).
   const socketRef = useRef<Socket | null>(null);
-  const [gameState, setGameState]         = useState<GameState | null>(null);
-  const [myPlayerIndex, setMyPlayerIndex] = useState<number>(-1);
-  const [roomCode, setRoomCode]           = useState<string>('');
-  const [error, setError]                 = useState<string>('');
-  const [rollingDice, setRollingDice]     = useState(false);
-  const [movingPiece, setMovingPiece]     = useState<string | null>(null);
-  const [capturingPiece, setCapturingPiece] = useState<string | null>(null);
-  const [captureMessage, setCaptureMessage] = useState('');
-  const [shareUrl, setShareUrl]           = useState('');
-  const [connecting, setConnecting]       = useState(true);
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [gameState, setGameState]     = useState<GameState | null>(null);
+  const [myPlayerIndex, setMyIndex]   = useState(-1);
+  const [roomCode, setRoomCode]       = useState(isCreate ? '' : roomId);
+  const [error, setError]             = useState('');
+  const [notice, setNotice]           = useState('');
+  const [rollingDice, setRolling]     = useState(false);
+  const [movingPiece, setMovingPiece] = useState<string | null>(null);
+  const [capturing, setCapturing]     = useState<string | null>(null);
+  const [shareUrl, setShareUrl]       = useState('');
+  const [connecting, setConnecting]   = useState(true);
+  const [kicked, setKicked]           = useState(false);
+  // Opening a shared /game/CODE link has no stored name, so ask for one
+  // instead of silently joining the room as "undefined".
+  const [needsName, setNeedsName]     = useState(false);
 
-  const audioCtxRef = useRef<AudioContext | null>(null);
+  const { play, muted, toggleMute } = useSound();
+  // Socket handlers are registered once, so they read the moving parts through
+  // refs rather than closing over a stale render's values. The refs are
+  // updated in effects, never during render.
+  const playRef    = useRef(play);
+  const stateRef   = useRef<GameState | null>(null);
+  const myIndexRef = useRef(-1);
 
-  function getAudioCtx() {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-    }
-    return audioCtxRef.current;
-  }
+  useEffect(() => { playRef.current = play; }, [play]);
+  useEffect(() => { myIndexRef.current = myPlayerIndex; }, [myPlayerIndex]);
 
-  function playTone(freq: number, duration: number, type: OscillatorType = 'sine', vol = 0.3) {
-    try {
-      const ctx = getAudioCtx();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.type = type; osc.frequency.value = freq;
-      gain.gain.setValueAtTime(vol, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
-      osc.start(); osc.stop(ctx.currentTime + duration);
-    } catch { /* audio not available */ }
-  }
+  const rollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rollStartRef = useRef(0);
 
-  function playDiceSound() {
-    [200, 300, 250, 400].forEach((f, i) => setTimeout(() => playTone(f, 0.1, 'square', 0.2), i * 80));
-  }
+  const toast = useCallback((msg: string) => {
+    setNotice(msg);
+    setTimeout(() => setNotice((n) => (n === msg ? '' : n)), TOAST_MS);
+  }, []);
 
-  function playMoveSound() {
-    playTone(600, 0.15, 'sine', 0.25);
-    setTimeout(() => playTone(800, 0.1, 'sine', 0.2), 100);
-  }
+  // ── Decide up front whether we have enough to join ──────────────────────
+  const [joinInfo, setJoinInfo] = useState<(StoredJoin & { playerCount?: number }) | null>(null);
 
-  function playCaptureSound() {
-    playTone(200, 0.3, 'sawtooth', 0.3);
-    setTimeout(() => playTone(150, 0.2, 'sawtooth', 0.2), 150);
-  }
-
-  function playWinSound() {
-    const notes = [523, 659, 784, 1047];
-    notes.forEach((f, i) => setTimeout(() => playTone(f, 0.4, 'sine', 0.35), i * 150));
-  }
-
+  // sessionStorage doesn't exist during SSR, so this decision can only be made
+  // after mount — reading it during render would break hydration.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    const stored = isCreate
+      ? readStored<StoredJoin & { playerCount: number }>(STORAGE_CREATE)
+      : readStored<StoredJoin>(STORAGE_ROOM(roomId));
+
+    if (stored?.playerName) { setJoinInfo(stored); setNeedsName(false); }
+    else if (isCreate)      { setError('Missing room setup — start again from the lobby.'); setConnecting(false); }
+    else                    { setNeedsName(true); setConnecting(false); }
+  }, [isCreate, roomId]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  // ── Socket lifecycle ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!joinInfo) return;
+
     const socket = io({ path: '/api/socket', transports: ['websocket'] });
     socketRef.current = socket;
-
-    // Remembers this tab's own name/password so a later refresh can rejoin
-    // (by room code) instead of re-running create/join with stale data.
-    let joinInfo: { playerName: string; password?: string } | null = null;
+    // Publishing the newly-created connection so children can subscribe to it
+    // is exactly what an effect is for; it runs once per mount, not per render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSocket(socket);
 
     socket.on('connect', () => {
       setConnecting(false);
       if (isCreate) {
-        const data = JSON.parse(sessionStorage.getItem('ludo_create') || '{}');
-        joinInfo = { playerName: data.playerName, password: data.password };
-        socket.emit('create_room', data);
+        socket.emit('create_room', {
+          playerName: joinInfo.playerName,
+          playerCount: joinInfo.playerCount ?? 4,
+          password: joinInfo.password ?? '',
+        });
       } else {
-        const stored = sessionStorage.getItem('ludo_room_' + roomId);
-        const data = stored ? JSON.parse(stored) : JSON.parse(sessionStorage.getItem('ludo_join') || '{}');
-        joinInfo = { playerName: data.playerName, password: data.password };
-        socket.emit('join_room', { ...data, roomCode: roomId });
+        socket.emit('join_room', {
+          roomCode: roomId,
+          playerName: joinInfo.playerName,
+          password: joinInfo.password ?? '',
+        });
       }
     });
 
-    socket.on('room_created', ({ roomCode: rc, playerIndex }: any) => {
+    socket.on('room_created', ({ roomCode: rc, playerIndex }) => {
       setRoomCode(rc);
-      setMyPlayerIndex(playerIndex);
-      // Build share URL
-      const base = window.location.origin;
-      setShareUrl(`${base}/game/${rc}`);
-      // Swap the address bar from /game/create to the real room code — otherwise
-      // a refresh re-triggers isCreate and spins up a brand-new room, stranding
-      // the host's original seat.
+      setMyIndex(playerIndex);
+      setShareUrl(`${window.location.origin}/game/${rc}`);
+      // Swap the address bar from /game/create to the real code — otherwise a
+      // refresh spins up a brand-new room and strands the host's seat.
       window.history.replaceState(null, '', `/game/${rc}`);
-      if (joinInfo) sessionStorage.setItem('ludo_room_' + rc, JSON.stringify(joinInfo));
+      try {
+        sessionStorage.setItem(STORAGE_ROOM(rc), JSON.stringify({
+          playerName: joinInfo.playerName, password: joinInfo.password ?? '',
+        }));
+      } catch { /* ignore */ }
     });
 
-    socket.on('joined', ({ playerIndex }: any) => {
-      setMyPlayerIndex(playerIndex);
-      if (joinInfo) sessionStorage.setItem('ludo_room_' + roomId, JSON.stringify(joinInfo));
+    socket.on('joined', ({ playerIndex }) => {
+      setMyIndex(playerIndex);
+      setShareUrl(`${window.location.origin}/game/${roomId}`);
+      try {
+        sessionStorage.setItem(STORAGE_ROOM(roomId), JSON.stringify({
+          playerName: joinInfo.playerName, password: joinInfo.password ?? '',
+        }));
+      } catch { /* ignore */ }
     });
 
-    socket.on('game_state', (state: GameState) => {
+    socket.on('game_state', (state) => {
+      stateRef.current = state;
       setGameState(state);
       if (state.roomCode) setRoomCode(state.roomCode);
     });
 
-    socket.on('dice_rolled', ({ playerIndex, value }: any) => {
-      playDiceSound();
-      setRollingDice(false);
+    /** Name a player by slot from the freshest state we've received. */
+    const nameOf = (index: number) => stateRef.current?.players[index]?.name;
+
+    socket.on('dice_rolled', ({ value, isAuto }: DiceRolledPayload) => {
+      playRef.current.dice();
+      // Let the tumble finish even when the server answers in 5ms on LAN —
+      // stopping it the instant the value arrives meant it never animated.
+      const elapsed = Date.now() - rollStartRef.current;
+      const wait = isAuto ? 0 : Math.max(0, DICE_ROLL_MIN_MS - elapsed);
+      setTimeout(() => setRolling(false), wait);
+      void value;
     });
 
-    socket.on('piece_moved', ({ pieceId, playerIndex, isAuto, capturedPieces }: any) => {
+    socket.on('piece_moved', ({ pieceId, capturedPieces }: PieceMovedPayload) => {
       setMovingPiece(pieceId);
-      if (capturedPieces && capturedPieces.length > 0) {
-        playCaptureSound();
-        const names = [...new Set(capturedPieces.map((c: any) => c.playerName))];
-        setCaptureMessage(`💥 Sent ${names.join(', ')}'s piece home!`);
-        setTimeout(() => setCaptureMessage(''), 2200);
-        setCapturingPiece(pieceId);
-        setTimeout(() => setCapturingPiece(null), 800);
+      setTimeout(() => setMovingPiece((p) => (p === pieceId ? null : p)), MOVE_ANIM_MS);
+
+      if (capturedPieces?.length) {
+        playRef.current.capture();
+        const names = Array.from(new Set(capturedPieces.map((c) => c.playerName)));
+        toast(`💥 Sent ${names.join(', ')} home!`);
+        setCapturing(pieceId);
+        setTimeout(() => setCapturing((p) => (p === pieceId ? null : p)), 800);
       } else {
-        playMoveSound();
+        playRef.current.move();
       }
-      setTimeout(() => setMovingPiece(null), 600);
     });
 
-    socket.on('game_over', (rankings: number[]) => {
-      playWinSound();
+    socket.on('turn_skipped', ({ playerIndex, value }: TurnSkippedPayload) => {
+      playRef.current.skip();
+      setRolling(false);
+      const mine = playerIndex === myIndexRef.current;
+      const who = mine ? 'You' : (nameOf(playerIndex) ?? 'Player');
+      // A 6 keeps the turn, so "skipped" would be wrong — they roll again.
+      const outcome = value === 6
+        ? (mine ? 'Roll again.' : `${who} rolls again.`)
+        : (mine ? 'Your turn was skipped.' : `${who}'s turn was skipped.`);
+      toast(`🎲 ${value} — no legal move. ${outcome}`);
     });
+
+    socket.on('player_left', (i) => {
+      const name = nameOf(i);
+      if (name) toast(`${name} lost connection…`);
+    });
+    socket.on('player_auto', (i) => {
+      const name = nameOf(i);
+      if (name) toast(`${name} is now on AUTO 🤖`);
+    });
+    socket.on('player_reconnected', (i) => {
+      const name = nameOf(i);
+      if (name) toast(`${name} is back ✅`);
+    });
+
+    socket.on('game_over', () => playRef.current.win());
+    socket.on('kicked', () => { setKicked(true); socket.disconnect(); });
 
     socket.on('error', (msg: string) => {
       setError(msg);
-      setTimeout(() => setError(''), 4000);
+      setRolling(false);
+      setTimeout(() => setError((e) => (e === msg ? '' : e)), 4000);
     });
 
-    return () => { socket.disconnect(); };
-  }, [roomId, isCreate]);
+    socket.on('disconnect', () => setRolling(false));
 
-  const handleRollDice = useCallback(() => {
-    if (!socketRef.current) return;
-    if (gameState?.currentPlayerIndex !== myPlayerIndex) return;
-    if (gameState?.diceRolled) return;
-    setRollingDice(true);
-    socketRef.current.emit('roll_dice');
-  }, [gameState, myPlayerIndex]);
+    return () => { socket.disconnect(); socketRef.current = null; setSocket(null); };
+  }, [joinInfo, isCreate, roomId, toast]);
 
-  const handleMovePiece = useCallback((pieceId: string) => {
-    if (!socketRef.current) return;
-    socketRef.current.emit('move_piece', { pieceId });
+  useEffect(() => () => { if (rollTimerRef.current) clearTimeout(rollTimerRef.current); }, []);
+
+  // ── Derived ─────────────────────────────────────────────────────────────
+  const myPlayer  = gameState?.players[myPlayerIndex];
+  const isMyTurn  = gameState?.status === 'playing' && gameState.currentPlayerIndex === myPlayerIndex;
+  const isHex     = !!gameState && gameState.playerCount >= 5;
+  const current   = gameState?.players[gameState.currentPlayerIndex];
+  const turnColor = current ? PLAYER_COLORS[current.colorIndex]?.hex : '#888';
+
+  // With 5–6 players an every-other-one split leaves three names crushed into
+  // an 80px column, so hex games get a single horizontal strip instead.
+  const splitPanels = !isHex;
+  const leftPanel  = useMemo(
+    () => (gameState ? gameState.players.filter((_, i) => !splitPanels || i % 2 === 0) : []),
+    [gameState, splitPanels],
+  );
+  const rightPanel = useMemo(
+    () => (gameState && splitPanels ? gameState.players.filter((_, i) => i % 2 === 1) : []),
+    [gameState, splitPanels],
+  );
+
+  // ── Actions ─────────────────────────────────────────────────────────────
+  const handleRoll = useCallback(() => {
+    const socket = socketRef.current;
+    if (!socket || !isMyTurn || gameState?.diceRolled || rollingDice) return;
+    rollStartRef.current = Date.now();
+    setRolling(true);
+    socket.emit('roll_dice');
+    // If the roll is never answered (rejected, or the socket dropped), don't
+    // leave the button spinning for ever.
+    if (rollTimerRef.current) clearTimeout(rollTimerRef.current);
+    rollTimerRef.current = setTimeout(() => setRolling(false), ROLL_TIMEOUT_MS);
+  }, [isMyTurn, gameState?.diceRolled, rollingDice]);
+
+  const handleMove = useCallback((pieceId: string) => {
+    socketRef.current?.emit('move_piece', { pieceId });
   }, []);
 
-  const isMyTurn = gameState?.status === 'playing' && gameState.currentPlayerIndex === myPlayerIndex;
-  const myPlayer = gameState?.players[myPlayerIndex];
-  const isHex = gameState && gameState.playerCount >= 5;
+  const handleLeave = useCallback(() => {
+    if (!window.confirm('Leave this game?')) return;
+    socketRef.current?.emit('leave_room');
+    try { sessionStorage.removeItem(STORAGE_ROOM(roomCode)); } catch { /* ignore */ }
+    router.push('/');
+  }, [roomCode, router]);
 
-  if (connecting) {
+  const handleStart = useCallback(() => socketRef.current?.emit('start_game'), []);
+  const handleKick  = useCallback((slotIndex: number) => {
+    socketRef.current?.emit('kick_player', { slotIndex });
+  }, []);
+
+  const handleNameSubmit = useCallback((playerName: string, password: string) => {
+    const info = { playerName, password };
+    try {
+      sessionStorage.setItem(STORAGE_ROOM(roomId), JSON.stringify(info));
+      localStorage.setItem(STORAGE_NAME, playerName);
+    } catch { /* ignore */ }
+    setNeedsName(false);
+    setConnecting(true);
+    setJoinInfo(info);
+  }, [roomId]);
+
+  // ── Screens ─────────────────────────────────────────────────────────────
+  if (kicked) {
     return (
-      <div className={styles.centered}>
-        <PingIndicator socket={socketRef.current} />
+      <Shell socket={socket}>
+        <div className={styles.message}>
+          <h2 className="font-orbitron">Removed from room</h2>
+          <p>The host removed you from this game.</p>
+          <Link href="/" className="btn btn-secondary">← Back to Lobby</Link>
+        </div>
+      </Shell>
+    );
+  }
+
+  if (needsName) {
+    return (
+      <Shell socket={socket}>
+        <JoinPrompt roomCode={roomId} onSubmit={handleNameSubmit} />
+      </Shell>
+    );
+  }
+
+  if (connecting || (!gameState && !error)) {
+    return (
+      <Shell socket={socket}>
         <div className={styles.connectingText}>
           <div className={styles.spinner} />
-          <span className="font-orbitron">Connecting…</span>
+          <span className="font-orbitron">{connecting ? 'Connecting…' : 'Loading…'}</span>
         </div>
-      </div>
+      </Shell>
     );
   }
 
   if (!gameState) {
     return (
-      <div className={styles.centered}>
-        <PingIndicator socket={socketRef.current} />
-        {error ? (
-          <div className={styles.connectingText}>
-            <div className={styles.errorBanner} data-testid="error-banner" style={{ position: 'static', animation: 'none' }}>{error}</div>
-            <a href="/" className="btn btn-secondary" style={{ marginTop: 16 }}>← Back to Lobby</a>
-          </div>
-        ) : (
-          <div className={styles.connectingText}>
-            <div className={styles.spinner} />
-            <span className="font-orbitron">Loading…</span>
-          </div>
-        )}
-      </div>
+      <Shell socket={socket}>
+        <div className={styles.message}>
+          <div className={styles.errorBox} data-testid="error-banner">{error}</div>
+          <Link href="/" className="btn btn-secondary">← Back to Lobby</Link>
+        </div>
+      </Shell>
     );
   }
 
   if (gameState.status === 'waiting') {
     return (
-      <div className={styles.centered}>
-        <PingIndicator socket={socketRef.current} />
+      <Shell socket={socket}>
+        {error && <div className={styles.errorBanner} data-testid="error-banner">{error}</div>}
         <WaitingRoom
           gameState={gameState}
           roomCode={roomCode}
           shareUrl={shareUrl}
           myPlayerIndex={myPlayerIndex}
+          onStart={handleStart}
+          onKick={handleKick}
+          onLeave={handleLeave}
         />
-      </div>
+      </Shell>
     );
   }
 
   return (
     <div className={styles.gamePage}>
-      <PingIndicator socket={socketRef.current} />
+      <PingIndicator socket={socket} />
 
-      {error && <div className={styles.errorBanner} data-testid="error-banner">{error}</div>}
-      {captureMessage && <div className={styles.captureBanner} data-testid="capture-banner">{captureMessage}</div>}
+      {error  && <div className={styles.errorBanner}  data-testid="error-banner">{error}</div>}
+      {notice && <div className={styles.noticeBanner} data-testid="capture-banner">{notice}</div>}
 
-      {/* Top bar */}
       <div className={styles.topBar}>
         <div className={styles.roomInfo}>
           <span className={styles.roomLabel}>ROOM</span>
           <span className={`${styles.roomCode} font-orbitron`} data-testid="room-code">{roomCode}</span>
         </div>
+
         <div className={styles.turnInfo}>
-          {gameState.status === 'playing' && (
-            <span className={styles.turnText} data-testid="turn-text" data-my-turn={isMyTurn} style={{ color: PLAYER_COLORS[gameState.players[gameState.currentPlayerIndex]?.colorIndex]?.hex }}>
-              {isMyTurn ? '⚡ Your Turn' : `${gameState.players[gameState.currentPlayerIndex]?.name}'s Turn`}
-            </span>
-          )}
+          <span
+            className={styles.turnText}
+            data-testid="turn-text"
+            data-my-turn={isMyTurn}
+            style={{ color: turnColor }}
+          >
+            {myPlayer?.isFinished
+              ? `👑 Spectating — finished #${myPlayer.finishRank}`
+              : isMyTurn
+                ? '⚡ Your Turn'
+                : `${current?.name ?? '…'}'s Turn`}
+          </span>
+        </div>
+
+        <div className={styles.topActions}>
+          <button
+            className={styles.iconBtn}
+            onClick={toggleMute}
+            aria-pressed={muted}
+            aria-label={muted ? 'Unmute sound' : 'Mute sound'}
+            title={muted ? 'Unmute' : 'Mute'}
+          >
+            {muted ? '🔇' : '🔊'}
+          </button>
+          <button
+            className={styles.iconBtn}
+            onClick={handleLeave}
+            aria-label="Leave game"
+            title="Leave game"
+          >
+            🚪
+          </button>
         </div>
       </div>
 
-      {/* Main game area */}
-      <div className={styles.gameArea}>
-        {/* Left panel — players 0 & 2 */}
+      <div className={`${styles.gameArea} ${isHex ? styles.gameAreaWide : ''}`}>
         <div className={styles.sidePanel}>
-          {gameState.players.filter((_, i) => i % 2 === 0).map(player => (
-            <PlayerPanel key={player.id} player={player} isMyTurn={gameState.currentPlayerIndex === player.slotIndex} isMe={player.slotIndex === myPlayerIndex} />
+          {leftPanel.map((p) => (
+            <PlayerPanel key={p.id} player={p}
+              isMyTurn={gameState.currentPlayerIndex === p.slotIndex}
+              isMe={p.slotIndex === myPlayerIndex} />
           ))}
         </div>
 
-        {/* Board */}
         <div className={styles.boardContainer}>
           {isHex ? (
-            <HexBoard gameState={gameState} myPlayerIndex={myPlayerIndex} movingPiece={movingPiece} capturingPiece={capturingPiece} onPieceClick={handleMovePiece} />
+            <HexBoard gameState={gameState} myPlayerIndex={myPlayerIndex}
+              movingPiece={movingPiece} capturingPiece={capturing} onPieceClick={handleMove} />
           ) : (
-            <SquareBoard gameState={gameState} myPlayerIndex={myPlayerIndex} movingPiece={movingPiece} capturingPiece={capturingPiece} onPieceClick={handleMovePiece} />
+            <SquareBoard gameState={gameState} myPlayerIndex={myPlayerIndex}
+              movingPiece={movingPiece} capturingPiece={capturing} onPieceClick={handleMove} />
           )}
         </div>
 
-        {/* Right panel — players 1 & 3 */}
-        <div className={styles.sidePanel}>
-          {gameState.players.filter((_, i) => i % 2 === 1).map(player => (
-            <PlayerPanel key={player.id} player={player} isMyTurn={gameState.currentPlayerIndex === player.slotIndex} isMe={player.slotIndex === myPlayerIndex} />
-          ))}
-        </div>
+        {splitPanels && (
+          <div className={styles.sidePanel}>
+            {rightPanel.map((p) => (
+              <PlayerPanel key={p.id} player={p}
+                isMyTurn={gameState.currentPlayerIndex === p.slotIndex}
+                isMe={p.slotIndex === myPlayerIndex} />
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Dice area */}
       <div className={styles.diceArea}>
         <DiceRoller
           value={gameState.diceValue}
           rolling={rollingDice}
-          canRoll={isMyTurn && !gameState.diceRolled && !myPlayer?.isFinished}
-          onRoll={handleRollDice}
-          currentPlayerColor={PLAYER_COLORS[gameState.players[gameState.currentPlayerIndex]?.colorIndex]?.hex}
+          canRoll={!!isMyTurn && !gameState.diceRolled && !myPlayer?.isFinished}
+          waitingForMove={!!isMyTurn && gameState.diceRolled}
+          onRoll={handleRoll}
+          currentPlayerColor={turnColor}
         />
       </div>
 
-      {/* Win Screen overlay */}
       {gameState.status === 'finished' && (
         <WinScreen gameState={gameState} myPlayerIndex={myPlayerIndex} />
       )}
+    </div>
+  );
+}
+
+/** Centred page chrome shared by every pre-game screen. */
+function Shell({ socket, children }: { socket: Socket | null; children: React.ReactNode }) {
+  return (
+    <div className={styles.centered}>
+      <PingIndicator socket={socket} />
+      {children}
     </div>
   );
 }

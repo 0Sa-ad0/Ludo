@@ -44,6 +44,12 @@ module.exports = defineConfig({
       // socket-level integration test instead (see tests/integration/), not
       // here — see the comment in tests/e2e/reconnect.spec.js for why.
       RECONNECT_GRACE_MS: '4000',
+      // The opposite direction: park the idle-turn watchdog well beyond any
+      // test's runtime. A browser test that rolls in a loop can otherwise
+      // drift past the production 45s and have the server play its turn
+      // mid-assertion. The watchdog itself is covered in tests/integration/
+      // where the timing can be driven deterministically.
+      TURN_TIMEOUT_MS: '600000',
     },
   },
 });

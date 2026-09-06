@@ -1,57 +1,70 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Socket } from 'socket.io-client';
-import styles from './PingIndicator.module.css';
+import { PING_GOOD, PING_FAIR } from '@/lib/constants';
 
 interface Props { socket: Socket | null; }
 
 export default function PingIndicator({ socket }: Props) {
   const [ping, setPing] = useState<number | null>(null);
-  const [offline, setOffline] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [offline, setOffline] = useState(true);
 
   useEffect(() => {
+    // No socket means nothing to measure; the component renders null in that
+    // case, so there is no state worth setting here.
     if (!socket) return;
+
+    // Named handlers so cleanup removes exactly these — the previous version
+    // called socket.off('ping_ack') with no handler, which would also strip
+    // listeners belonging to anyone else, and never removed connect/disconnect
+    // at all, so they piled up on every re-render.
+    const onAck = (clientTime: number) => setPing(Date.now() - clientTime);
+    const onConnect = () => setOffline(false);
+    const onDisconnect = () => { setOffline(true); setPing(null); };
+
+    socket.on('ping_ack', onAck);
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
 
     const measure = () => {
       if (!socket.connected) { setOffline(true); return; }
       setOffline(false);
-      const t0 = Date.now();
-      socket.emit('ping', t0);
+      socket.emit('ping', Date.now());
     };
 
-    socket.on('ping_ack', (serverTime: number) => {
-      const rtt = Date.now() - serverTime;
-      setPing(rtt);
-    });
-
-    socket.on('disconnect', () => setOffline(true));
-    socket.on('connect',    () => setOffline(false));
-
     measure();
-    intervalRef.current = setInterval(measure, 1000);
+    const id = setInterval(measure, 1000);
 
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      socket.off('ping_ack');
+      clearInterval(id);
+      socket.off('ping_ack', onAck);
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
     };
   }, [socket]);
 
-  const pingClass = offline
-    ? styles.offline
-    : ping === null
-      ? styles.offline
-      : ping < 100
-        ? styles.good
-        : ping < 300
-          ? styles.fair
-          : styles.bad;
+  // Pages with no socket (the leaderboard) have no latency to report —
+  // showing a permanent "OFFLINE" badge there just looks broken.
+  if (!socket) return null;
+
+  const cls = offline || ping === null
+    ? 'ping-offline'
+    : ping < PING_GOOD ? 'ping-good'
+    : ping < PING_FAIR ? 'ping-fair'
+    : 'ping-bad';
+
+  const label = offline ? 'OFFLINE' : ping !== null ? `${ping}ms` : '…';
 
   return (
-    <div className={`ping-indicator ${pingClass}`} id="ping-indicator" aria-label={`Ping: ${offline ? 'offline' : ping !== null ? ping + 'ms' : '...'}`}>
+    <div
+      className={`ping-indicator ${cls}`}
+      id="ping-indicator"
+      role="status"
+      aria-label={`Connection: ${offline ? 'offline' : `${ping}ms latency`}`}
+    >
       <span className="ping-dot" />
-      <span>{offline ? 'OFFLINE' : ping !== null ? `${ping}ms` : '...'}</span>
+      <span>{label}</span>
     </div>
   );
 }

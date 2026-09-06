@@ -7,7 +7,9 @@
   --bg-card2:    #1a1a38;
   --border:      rgba(255,255,255,0.08);
   --text:        #e8e8ff;
-  --text-dim:    #8888aa;
+  /* Lifted from #8888aa: at the 0.65–0.72rem sizes this is used at, the old
+     value sat around 4.2:1 on the card background — under the 4.5:1 minimum. */
+  --text-dim:    #a2a2c4;
 
   --pink:    #ff2d78;
   --blue:    #00c8ff;
@@ -53,9 +55,17 @@ body {
 }
 
 a { color: inherit; text-decoration: none; }
-button { cursor: pointer; border: none; background: none; font-family: inherit; }
+button { cursor: pointer; border: none; background: none; font-family: inherit; color: inherit; }
 input { font-family: inherit; }
 img, svg { display: block; max-width: 100%; }
+
+/* Keyboard users need to see where they are; pointer users don't get a ring. */
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+svg :focus-visible { outline-offset: 0; }
 
 /* ─── Typography ─────────────────────────────────────────────────────────────── */
 .font-orbitron { font-family: 'Orbitron', sans-serif; }
@@ -274,4 +284,16 @@ img, svg { display: block; max-width: 100%; }
 @media (max-width: 480px) {
   .btn { padding: 13px 20px; font-size: 0.78rem; }
   .card { padding: 18px; border-radius: var(--radius); }
+}
+
+/* ─── Reduced motion ─────────────────────────────────────────────────────────── */
+/* This UI leans hard on pulsing glows, a bouncing dice and falling confetti.
+   Honour the system preference and hold everything still. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

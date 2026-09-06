@@ -2,7 +2,6 @@
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
   background: var(--bg);
 }
 
@@ -13,6 +12,7 @@
   justify-content: center;
   flex-direction: column;
   gap: 16px;
+  padding: 20px 16px;
 }
 
 .connectingText {
@@ -25,6 +25,26 @@
   letter-spacing: 0.1em;
 }
 
+.message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+  max-width: 380px;
+}
+.message h2 { font-size: 1.1rem; letter-spacing: 0.06em; }
+.message p  { color: var(--text-dim); font-size: 0.88rem; }
+
+.errorBox {
+  background: rgba(255,45,120,0.12);
+  border: 1px solid var(--pink);
+  border-radius: var(--radius-sm);
+  padding: 12px 18px;
+  font-size: 0.88rem;
+  color: var(--pink);
+}
+
 .spinner {
   width: 24px; height: 24px;
   border: 2px solid rgba(255,255,255,0.1);
@@ -35,12 +55,15 @@
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ─── Top bar ──────────────────────────────────────────────────────────── */
 .topBar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 10px 16px;
-  background: rgba(18,18,42,0.9);
+  gap: 10px;
+  padding: 8px 12px;
+  /* Leave room for the fixed ping badge in the corner. */
+  padding-right: 92px;
+  background: rgba(18,18,42,0.92);
   border-bottom: 1px solid var(--border);
   backdrop-filter: blur(8px);
   position: sticky;
@@ -49,44 +72,61 @@
   min-height: 52px;
 }
 
-.roomInfo {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
+.roomInfo { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
 .roomLabel {
-  font-size: 0.65rem;
+  font-size: 0.6rem;
   color: var(--text-dim);
   letter-spacing: 0.1em;
   font-family: 'Orbitron', sans-serif;
 }
 
 .roomCode {
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   color: var(--pink);
   text-shadow: var(--glow-pink);
 }
 
-.turnInfo { flex: 1; text-align: center; }
+.turnInfo { flex: 1; text-align: center; min-width: 0; }
 
 .turnText {
   font-family: 'Orbitron', sans-serif;
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   display: inline-block;
   transition: color 0.3s ease;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* Only pulse when it's actually actionable for this viewer — draws the eye
-   to "your turn" instead of pulsing identically for everyone all the time. */
+/* Only pulse when it's actually actionable for this viewer — pulsing
+   identically for everyone all the time tells nobody anything. */
 .turnText[data-my-turn="true"] {
   animation: pulse-glow 1.2s infinite, turn-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+.topActions { display: flex; gap: 4px; flex-shrink: 0; }
+
+.iconBtn {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--text);
+  transition: var(--transition);
+  touch-action: manipulation;
+}
+.iconBtn:hover { border-color: rgba(255,255,255,0.28); background: rgba(255,255,255,0.06); }
+.iconBtn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+/* ─── Play area ────────────────────────────────────────────────────────── */
 .gameArea {
   display: flex;
   flex: 1;
@@ -94,25 +134,46 @@
   justify-content: center;
   padding: 8px;
   gap: 8px;
-  overflow: hidden;
+  min-height: 0;
 }
 
 .sidePanel {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 80px;
+  width: 92px;
   flex-shrink: 0;
 }
 
+/* 5–6 players: one horizontal strip above the board instead of two narrow
+   columns, which would otherwise crush three names into 92px each. */
+.gameAreaWide { flex-direction: column; }
+.gameAreaWide .sidePanel {
+  flex-direction: row;
+  flex-wrap: wrap;
+  width: 100%;
+  max-width: 760px;
+  justify-content: center;
+  gap: 6px;
+}
+.gameAreaWide .sidePanel > * { flex: 1 1 110px; max-width: 180px; }
+
+/* The board is always square. Its size is driven by width alone, with
+   aspect-ratio deriving the height, so flex can never stretch the box into a
+   non-square and letterbox the SVG inside it. */
 .boardContainer {
-  flex: 1;
-  min-width: 0;
+  flex: none;
+  align-self: center;
+  aspect-ratio: 1;
+  width: min(calc(100vw - 220px), calc(100dvh - 190px));
+  max-width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  max-height: calc(100dvh - 180px);
-  aspect-ratio: 1;
+}
+
+.gameAreaWide .boardContainer {
+  width: min(calc(100vw - 40px), calc(100dvh - 280px));
 }
 
 .diceArea {
@@ -124,58 +185,71 @@
   border-top: 1px solid var(--border);
 }
 
+/* ─── Toasts ───────────────────────────────────────────────────────────── */
+/* Anchored to the bottom, just above the dice bar. At the top they sat on
+   top of the player panels — which in a 5–6 player game are a full-width
+   strip directly under the header. */
+.errorBanner,
+.noticeBanner {
+  position: fixed;
+  bottom: 108px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-radius: var(--radius-sm);
+  padding: 9px 18px;
+  font-size: 0.82rem;
+  z-index: 500;
+  animation: slide-up 0.3s ease;
+  /* Long names used to run off both edges of a phone. */
+  max-width: min(92vw, 460px);
+  text-align: center;
+  line-height: 1.35;
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+
 .errorBanner {
-  position: fixed;
-  top: 60px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(255,45,120,0.15);
+  background: rgba(255,45,120,0.9);
   border: 1px solid var(--pink);
-  border-radius: var(--radius-sm);
-  padding: 8px 20px;
-  font-size: 0.85rem;
-  color: var(--pink);
-  z-index: 500;
-  animation: slide-up 0.3s ease;
-  white-space: nowrap;
-}
-
-.captureBanner {
-  position: fixed;
-  top: 100px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(255,107,0,0.15);
-  border: 1px solid var(--orange);
-  border-radius: var(--radius-sm);
-  padding: 8px 20px;
-  font-size: 0.85rem;
+  color: #fff;
   font-weight: 600;
-  color: var(--orange);
-  z-index: 500;
-  animation: slide-up 0.3s ease;
-  white-space: nowrap;
 }
 
-/* Mobile — stack vertically */
-@media (max-width: 600px) {
+.noticeBanner {
+  bottom: 158px;
+  background: rgba(20,20,44,0.94);
+  border: 1px solid var(--orange);
+  color: var(--orange);
+  font-weight: 600;
+}
+
+/* ─── Mobile ───────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
   .gameArea {
     flex-direction: column;
-    padding: 4px;
-    gap: 4px;
+    /* Pack from the top instead of centring. Centring left a large gap under
+       the header and pushed the second row of player panels down into the
+       toast area at the bottom. */
+    justify-content: flex-start;
+    padding: 6px 4px;
+    gap: 6px;
   }
 
-  .sidePanel {
+  /* Wrap rather than scroll horizontally. A 6-player strip used to overflow
+     off-screen, so a player couldn't even see their own panel. */
+  .gameArea .sidePanel {
     flex-direction: row;
+    flex-wrap: wrap;
     width: 100%;
-    height: auto;
-    overflow-x: auto;
     justify-content: center;
+    gap: 5px;
+  }
+  .gameArea .sidePanel > * { flex: 1 1 96px; max-width: 150px; }
+
+  .gameArea .boardContainer {
+    width: min(95vw, calc(100dvh - 300px));
   }
 
-  .boardContainer {
-    max-height: min(80vw, 400px);
-    width: min(80vw, 400px);
-    flex: none;
-  }
+  .topBar { padding-right: 88px; }
+  .roomLabel { display: none; }
 }

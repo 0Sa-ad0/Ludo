@@ -6,8 +6,8 @@
     "dev": "node server.js",
     "build": "next build",
     "start": "NODE_ENV=production node server.js",
-    "lint": "next lint",
-    "test": "jest --testPathIgnorePatterns=e2e",
+    "lint": "eslint .",
+    "test": "jest",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -26,8 +26,8 @@
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "@types/uuid": "^10.0.0",
-    "eslint": "^8",
-    "eslint-config-next": "14.2.5",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.4",
     "jest": "^30.5.1",
     "typescript": "^5"
   }

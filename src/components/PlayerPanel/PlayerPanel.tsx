@@ -12,46 +12,67 @@ interface Props {
 
 export default function PlayerPanel({ player, isMyTurn, isMe }: Props) {
   const color = PLAYER_COLORS[player.colorIndex];
-  const finishedPieces = player.pieces.filter(p => p.status === 'finished').length;
-  const homePieces     = player.pieces.filter(p => p.status === 'home').length;
-  const activePieces   = player.pieces.filter(p => p.status === 'active').length;
+  const finished = player.pieces.filter((p) => p.status === 'finished').length;
+
+  const status = player.isFinished
+    ? `finished in place ${player.finishRank}`
+    : !player.isConnected && player.isAuto
+      ? 'disconnected, playing on AUTO'
+      : !player.isConnected
+        ? 'reconnecting'
+        : isMyTurn
+          ? 'taking their turn'
+          : 'waiting';
 
   return (
     <div
       className={`${styles.panel} ${isMyTurn ? styles.active : ''} ${player.isFinished ? styles.finished : ''}`}
       style={{ '--color': color.hex, '--glow': color.glow } as React.CSSProperties}
       id={`player-panel-${player.slotIndex}`}
+      aria-label={`${player.name}, ${finished} of 4 home, ${status}`}
     >
-      {/* Color strip */}
       <div className={styles.colorStrip} style={{ background: color.hex, boxShadow: `0 0 10px ${color.hex}` }} />
 
-      {/* Name + status */}
       <div className={styles.info}>
         <div className={styles.nameRow}>
           <span className={styles.name} title={player.name}>{player.name}</span>
           {isMe && <span className={styles.youBadge}>YOU</span>}
+          {player.isHost && !player.isFinished && (
+            <span className={styles.hostBadge} title="Host">👑</span>
+          )}
           {!player.isConnected && !player.isAuto && !player.isFinished && (
-            <span className={styles.reconnectingBadge} data-testid={`reconnecting-${player.slotIndex}`} title="Reconnecting…">🔌</span>
+            <span className={styles.reconnectingBadge}
+              data-testid={`reconnecting-${player.slotIndex}`} title="Reconnecting…">🔌</span>
           )}
           {player.isAuto && !player.isConnected && (
-            <span className={styles.autoBadge} data-testid={`auto-${player.slotIndex}`} title="AUTO — playing on their behalf">🤖</span>
+            <span className={styles.autoBadge}
+              data-testid={`auto-${player.slotIndex}`} title="AUTO — playing on their behalf">🤖</span>
           )}
           {player.isFinished && player.finishRank && (
-            <span className={styles.rankBadge}>#{player.finishRank}</span>
+            <span className={styles.rankBadge} title={`Finished #${player.finishRank}`}>
+              #{player.finishRank}
+            </span>
           )}
         </div>
 
-        {/* Piece indicators */}
-        <div className={styles.pieces}>
+        {/* The winner keeps watching rather than being dropped from the board. */}
+        {player.isFinished && (
+          <span className={styles.spectating} data-testid={`spectating-${player.slotIndex}`}>
+            👑 Spectating
+          </span>
+        )}
+
+        <div className={styles.pieces} aria-hidden>
           {player.pieces.map((piece) => (
             <div
               key={piece.id}
               className={`${styles.pieceDot} ${
-                piece.status === 'finished' ? styles.pieceFinished :
-                piece.status === 'active'   ? styles.pieceActive   :
-                                              styles.pieceHome
+                piece.status === 'finished' ? styles.pieceFinished
+                : piece.status === 'active' ? styles.pieceActive
+                : styles.pieceHome
               }`}
-              style={{ background: piece.status !== 'home' ? color.hex : undefined }}
+              style={{ background: piece.status === 'active' ? color.hex : undefined }}
+              title={piece.status}
             />
           ))}
         </div>

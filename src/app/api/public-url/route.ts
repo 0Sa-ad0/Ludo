@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server';
 
-// The public URL is set by server.js via a global variable when ngrok starts
+/** Set by an ngrok bootstrap script, if one is running. */
+declare global {
+  var __LUDO_PUBLIC_URL: string | undefined;
+}
+
 export async function GET() {
-  const url = (global as any).__LUDO_PUBLIC_URL || null;
-  return NextResponse.json({ url });
+  return NextResponse.json({ url: globalThis.__LUDO_PUBLIC_URL ?? null });
 }

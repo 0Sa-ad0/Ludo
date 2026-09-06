@@ -1,27 +1,22 @@
 /**
- * Pure Ludo game-state logic — no I/O, no sockets, no DB.
+ * Ludo game-state transitions — no I/O, no sockets, no DB.
  * Shared by server.js (runtime) and the test suite (tests/game-logic.test.js).
+ *
+ * The rules themselves (path lengths, safe squares, move legality, board
+ * geometry) live in src/lib/rules.js, which the React components import too —
+ * so a rule only ever has to be changed in one place.
  */
 
 const { v4: uuidv4 } = require('uuid');
+const rules = require('./src/lib/rules');
 
-const SQUARE_TRACK_LEN = 52;
-const HEX_TRACK_LEN    = 60;
-const HOME_COL_LEN     = 5;
-
-const SQUARE_START = { 0: 0, 1: 13, 2: 26, 3: 39 };
-const HEX_START    = { 0: 0, 1: 10, 2: 20, 3: 30, 4: 40, 5: 50 };
-const SQUARE_SAFE  = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
-const HEX_SAFE     = new Set([0, 8, 10, 18, 20, 28, 30, 38, 40, 48, 50, 58]);
-
-function getTrackLen(pc) { return pc <= 4 ? SQUARE_TRACK_LEN : HEX_TRACK_LEN; }
-function getSafeSet(pc)  { return pc <= 4 ? SQUARE_SAFE : HEX_SAFE; }
-function getStartSq(idx, pc) { return pc <= 4 ? SQUARE_START[idx] : HEX_START[idx]; }
-
-function pathToTrack(pathPos, playerIndex, pc) {
-  const trackLen = getTrackLen(pc);
-  return (getStartSq(playerIndex, pc) + pathPos) % trackLen;
-}
+const {
+  PIECES_PER_PLAYER, HOME_COLUMN_LEN, MIN_PLAYERS, MAX_PLAYERS,
+  SQUARE_TRACK_LEN, HEX_TRACK_LEN,
+  SQUARE_START, HEX_START, SQUARE_SAFE, HEX_SAFE,
+  getTrackLen, getLoopLen, getGoalPos, getSafeSet, getStartSq,
+  isOnTrack, pathToTrack, getHomeEntrance, isValidPlayerCount, getValidMoves,
+} = rules;
 
 function generateRoomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -44,18 +39,20 @@ function createInitialState(roomCode, playerCount, passwordHash) {
     lastMove:             null,
     winner:               null,
     rankings:             [],
+    createdAt:            Date.now(),
   };
 }
 
 // Strip the password hash before broadcasting state to clients — no reason
 // any client (not even the room's own players) needs to see it.
 function sanitizeState(state) {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured purely to omit it
   const { passwordHash, ...rest } = state;
   return rest;
 }
 
 function createPlayer(gameId, name, colorIndex, slotIndex) {
-  const pieces = Array.from({ length: 4 }, (_, i) => ({
+  const pieces = Array.from({ length: PIECES_PER_PLAYER }, (_, i) => ({
     id:            `p${slotIndex}_piece${i}`,
     playerIndex:   slotIndex,
     pieceIndex:    i,
@@ -74,113 +71,165 @@ function createPlayer(gameId, name, colorIndex, slotIndex) {
     isAuto:      false,
     isFinished:  false,
     finishRank:  null,
+    isHost:      slotIndex === 0,
     pieces,
   };
 }
 
-function getValidMoves(player, diceValue, state) {
-  const pc = state.playerCount;
-  const trackLen = getTrackLen(pc);
-  const totalPath = trackLen + HOME_COL_LEN;
+// ─── Turn bookkeeping ────────────────────────────────────────────────────────
 
-  return player.pieces
-    .filter((piece) => {
-      if (piece.status === 'finished') return false;
-      if (piece.status === 'home')     return diceValue === 6;
-      return piece.pathPosition + diceValue <= totalPath;
-    })
-    .map((p) => p.id);
+/**
+ * Hand the turn to the next player who is still in the game, skipping anyone
+ * who has already finished. Mutates `state`.
+ *
+ * Guarded against the case where nobody is left to play — the caller is
+ * expected to have ended the game by then, but an infinite loop here would
+ * hang the whole server, so it is not left to chance.
+ */
+function advanceTurn(state, fromIndex) {
+  const pc = state.playerCount;
+  let next = (fromIndex + 1) % pc;
+  for (let guard = 0; guard < pc; guard++) {
+    if (state.players[next] && !state.players[next].isFinished) break;
+    next = (next + 1) % pc;
+  }
+  state.currentPlayerIndex = next;
+  return state;
 }
 
+/** Clear the roll so the next player starts from a clean slate. Mutates. */
+function clearDice(state) {
+  state.diceRolled = false;
+  state.diceValue  = null;
+  return state;
+}
+
+/**
+ * End the current player's go without moving anything — used when a roll
+ * produces no legal move. A 6 keeps the turn (the bonus roll still applies,
+ * as it does on the physical board).
+ */
+function skipTurn(state, playerIndex, diceValue) {
+  if (diceValue !== 6) advanceTurn(state, playerIndex);
+  return clearDice(state);
+}
+
+/**
+ * Close the game out once at most one player is still going: the straggler is
+ * awarded the final rank rather than being left to play alone. Mutates.
+ */
+function finalizeIfOver(state) {
+  const active = state.players.filter((p) => !p.isFinished);
+  if (active.length > 1) return state;
+
+  if (active.length === 1) {
+    const last = active[0];
+    last.isFinished = true;
+    last.finishRank = state.rankings.length + 1;
+    state.rankings.push(last.slotIndex);
+  }
+  state.status = 'finished';
+  state.winner = state.rankings.length ? state.rankings[0] : null;
+  return state;
+}
+
+// ─── Moves ───────────────────────────────────────────────────────────────────
+
+/**
+ * Apply a move and return a NEW state — callers rely on this being pure, so
+ * the incoming state is never mutated.
+ *
+ * The move is assumed to already be legal; server.js checks it against
+ * getValidMoves before calling.
+ */
 function applyMove(state, playerIndex, pieceId, diceValue) {
   const s = JSON.parse(JSON.stringify(state));
   const player = s.players[playerIndex];
-  const piece  = player.pieces.find((p) => p.id === pieceId);
+  if (!player) return s;
+  const piece = player.pieces.find((p) => p.id === pieceId);
   if (!piece) return s;
 
-  const pc = s.playerCount;
-  const trackLen  = getTrackLen(pc);
-  const totalPath = trackLen + HOME_COL_LEN;
-  const safeSet   = getSafeSet(pc);
+  const pc      = s.playerCount;
+  const goal    = getGoalPos(pc);
+  const safeSet = getSafeSet(pc);
 
+  // ── Advance the piece ──────────────────────────────────────────────────
   if (piece.status === 'home') {
-    piece.status       = 'active';
-    piece.pathPosition = 0;
+    piece.status        = 'active';
+    piece.pathPosition  = 0;
     piece.trackPosition = getStartSq(playerIndex, pc);
   } else {
-    piece.pathPosition += diceValue;
-    piece.trackPosition = piece.pathPosition < trackLen
+    piece.pathPosition  = piece.pathPosition + diceValue;
+    // Once past the loop the piece is in its private home column, where it is
+    // off the shared track and can no longer be captured.
+    piece.trackPosition = isOnTrack(piece.pathPosition, pc)
       ? pathToTrack(piece.pathPosition, playerIndex, pc)
       : -1;
   }
 
-  if (piece.pathPosition === totalPath) {
+  if (piece.pathPosition === goal) {
     piece.status = 'finished';
-    const allDone = player.pieces.every((p) => p.status === 'finished');
-    if (allDone && !player.isFinished) {
+    piece.trackPosition = -1;
+    if (player.pieces.every((p) => p.status === 'finished') && !player.isFinished) {
       player.isFinished = true;
       player.finishRank = s.rankings.length + 1;
       s.rankings.push(playerIndex);
+      if (s.winner === null) s.winner = playerIndex;
     }
   }
 
-  // Capture check
+  // ── Capture ────────────────────────────────────────────────────────────
   const capturedPieces = []; // [{ id, playerName }]
   if (piece.status === 'active' && piece.trackPosition !== -1) {
     const tp = piece.trackPosition;
-    const startSq = getStartSq(playerIndex, pc);
-    const isSafe = safeSet.has(tp) || tp === startSq;
-    if (!isSafe) {
+    if (!safeSet.has(tp)) {
       for (const opp of s.players) {
         if (opp.slotIndex === playerIndex) continue;
-        for (const op of opp.pieces) {
-          if (op.status !== 'active' || op.trackPosition !== tp) continue;
-          const sameCount = opp.pieces.filter(p => p.status === 'active' && p.trackPosition === tp).length;
-          if (sameCount >= 2) continue; // block
+        // Two or more pieces of one colour on a square form a block, which
+        // cannot be captured — so count first, then decide.
+        const stacked = opp.pieces.filter((p) => p.status === 'active' && p.trackPosition === tp);
+        if (stacked.length >= 2) continue;
+        for (const op of stacked) {
           capturedPieces.push({ id: op.id, playerName: opp.name });
-          op.status = 'home'; op.pathPosition = -1; op.trackPosition = -1;
+          op.status = 'home';
+          op.pathPosition = -1;
+          op.trackPosition = -1;
         }
       }
     }
   }
 
-  // Advance turn (a bonus roll on 6 is void if that move just finished the player —
-  // there's no one left to take the bonus turn for)
-  if (diceValue !== 6 || player.isFinished) {
-    let next = (playerIndex + 1) % pc;
-    let guard = 0;
-    while (s.players[next].isFinished && guard < pc) {
-      next = (next + 1) % pc; guard++;
-    }
-    s.currentPlayerIndex = next;
-  }
-  s.diceRolled = false;
-  s.diceValue  = null;
-  s.lastMove   = { playerIndex, pieceId, isAuto: false, capturedPieces };
+  // ── Hand over the turn ─────────────────────────────────────────────────
+  // A 6 earns another roll — but not if that move just finished the player,
+  // since there is no longer anyone to take the bonus turn.
+  if (diceValue !== 6 || player.isFinished) advanceTurn(s, playerIndex);
+  clearDice(s);
 
-  const active = s.players.filter(p => !p.isFinished);
-  if (active.length <= 1) {
-    if (active.length === 1) {
-      const last = active[0];
-      last.isFinished = true; last.finishRank = s.rankings.length + 1;
-      s.rankings.push(last.slotIndex);
-    }
-    s.status = 'finished';
-  }
-
-  return s;
+  s.lastMove = { playerIndex, pieceId, isAuto: false, capturedPieces };
+  return finalizeIfOver(s);
 }
 
+/** AUTO mode: not AI, just a uniformly random pick from the legal moves. */
 function pickAutoMove(player, diceValue, state) {
   const valid = getValidMoves(player, diceValue, state);
   if (!valid.length) return null;
   return valid[Math.floor(Math.random() * valid.length)];
 }
 
+/** A fair six-sided die. Kept here so tests can stub one place. */
+function rollDie() {
+  return Math.floor(Math.random() * 6) + 1;
+}
+
 module.exports = {
-  SQUARE_TRACK_LEN, HEX_TRACK_LEN, HOME_COL_LEN,
+  // re-exported rules, so server.js has a single import
+  PIECES_PER_PLAYER, HOME_COLUMN_LEN, MIN_PLAYERS, MAX_PLAYERS,
+  SQUARE_TRACK_LEN, HEX_TRACK_LEN,
   SQUARE_START, HEX_START, SQUARE_SAFE, HEX_SAFE,
-  getTrackLen, getSafeSet, getStartSq, pathToTrack,
+  getTrackLen, getLoopLen, getGoalPos, getSafeSet, getStartSq,
+  isOnTrack, pathToTrack, getHomeEntrance, isValidPlayerCount, getValidMoves,
+  // state transitions
   generateRoomCode, createInitialState, sanitizeState, createPlayer,
-  getValidMoves, applyMove, pickAutoMove,
+  advanceTurn, clearDice, skipTurn, finalizeIfOver,
+  applyMove, pickAutoMove, rollDie,
 };
