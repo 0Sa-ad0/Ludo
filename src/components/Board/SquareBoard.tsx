@@ -7,7 +7,7 @@ import {
   SQUARE_CELL as CELL, SQUARE_SIZE as SIZE,
   SQUARE_TRACK, SQUARE_HOME_COLS, SQUARE_HOME_QUADRANTS,
   getLoopLen, isOnTrack, pathToTrack, isSafeSquare,
-  getValidMoves, startSquares,
+  getValidMoves,
 } from '@/lib/board';
 import styles from './SquareBoard.module.css';
 
@@ -42,6 +42,28 @@ export default function SquareBoard({
   const { players, playerCount, currentPlayerIndex, diceValue, diceRolled } = gameState;
   const loopLen = getLoopLen(playerCount);
 
+  /**
+   * Maps a player's real slotIndex to the quadrant it's actually DRAWN in
+   * (0=bottom-left, 1=top-left, 2=top-right, 3=bottom-right) — purely a
+   * display transform. Two rules:
+   *
+   *  1. The viewer's own slot always maps to 0 (bottom-left) — you always
+   *     see your own base nearest you, whether you're the host or joined
+   *     later.
+   *  2. With exactly 2 players, the other slot maps to 2 (top-right), not 1
+   *     — opponents sit diagonally across the board, not side by side.
+   *     For 3–4 players it's a plain rotation that preserves everyone's
+   *     relative (turn) order around the board.
+   *
+   * Game logic (server state, piece ids, capture rules) is untouched — this
+   * only decides where things are drawn, never what's true.
+   */
+  const visualSlot = useMemo(() => {
+    const canonical = (s: number) => (playerCount === 2 ? (s === 0 ? 0 : 2) : s);
+    const viewerCanonical = myPlayerIndex >= 0 ? canonical(myPlayerIndex) : 0;
+    return (realSlot: number) => (canonical(realSlot) - viewerCanonical + 4) % 4;
+  }, [playerCount, myPlayerIndex]);
+
   // The server is the authority; this only decides what to highlight, so it
   // calls the very same rule function rather than re-deriving it.
   const validMoveIds = useMemo(() => {
@@ -51,19 +73,23 @@ export default function SquareBoard({
     return new Set(getValidMoves(me, diceValue, gameState));
   }, [diceRolled, currentPlayerIndex, myPlayerIndex, players, diceValue, gameState]);
 
-  /** Where a piece sits right now, or null while it is still in the home base. */
+  /** Where a piece sits right now (in display space), or null while it is
+   *  still in the home base. `slot` is the player's REAL slotIndex — this
+   *  looks up the visually-rotated position for it. */
   function cellFor(piece: Piece, slot: number): Point | null {
     if (piece.status === 'home') return null;
     if (piece.status === 'finished') return null;   // parked in the goal instead
+    const vSlot = visualSlot(slot);
     if (isOnTrack(piece.pathPosition, playerCount)) {
-      return SQUARE_TRACK[pathToTrack(piece.pathPosition, slot, playerCount)] ?? null;
+      return SQUARE_TRACK[pathToTrack(piece.pathPosition, vSlot, playerCount)] ?? null;
     }
-    return SQUARE_HOME_COLS[slot]?.[piece.pathPosition - loopLen] ?? null;
+    return SQUARE_HOME_COLS[vSlot]?.[piece.pathPosition - loopLen] ?? null;
   }
 
-  /** Resting place for a finished piece, inside its owner's goal triangle. */
+  /** Resting place for a finished piece, inside its owner's goal triangle
+   *  (display space — `slot` is the REAL slotIndex). */
   function goalXY(slot: number, pieceIndex: number): Point {
-    const [dx, dy] = GOAL_DIRS[slot] ?? [0, 0];
+    const [dx, dy] = GOAL_DIRS[visualSlot(slot)] ?? [0, 0];
     const spread = (pieceIndex - 1.5) * 11;
     return [
       CENTER[0] + dx * CELL * 0.78 - dy * spread,
@@ -86,26 +112,35 @@ export default function SquareBoard({
     }
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [players, playerCount]);
+  }, [players, playerCount, visualSlot]);
 
   /** Target square preview for the piece the player is about to move. */
   const previewCells = useMemo(() => {
     if (!validMoveIds.size || !diceValue) return [] as Point[];
     const me = players[myPlayerIndex];
     if (!me) return [] as Point[];
+    const myVisual = visualSlot(me.slotIndex);
     const out: Point[] = [];
     for (const piece of me.pieces) {
       if (!validMoveIds.has(piece.id)) continue;
       const nextPath = piece.status === 'home' ? 0 : piece.pathPosition + diceValue;
       const cell = isOnTrack(nextPath, playerCount)
-        ? SQUARE_TRACK[pathToTrack(nextPath, me.slotIndex, playerCount)]
-        : SQUARE_HOME_COLS[me.slotIndex]?.[nextPath - loopLen];
+        ? SQUARE_TRACK[pathToTrack(nextPath, myVisual, playerCount)]
+        : SQUARE_HOME_COLS[myVisual]?.[nextPath - loopLen];
       if (cell) out.push(cell);
     }
     return out;
-  }, [validMoveIds, diceValue, players, myPlayerIndex, playerCount, loopLen]);
+  }, [validMoveIds, diceValue, players, myPlayerIndex, playerCount, loopLen, visualSlot]);
 
-  const starts = startSquares(playerCount);
+  // Real start-track-index -> owning player, but keyed by where that start
+  // square is actually DRAWN (post-rotation), not the player's real slot.
+  const displayStartOwner = useMemo(() => {
+    const map = new Map<number, Player>();
+    for (const player of players) {
+      map.set(pathToTrack(0, visualSlot(player.slotIndex), playerCount), player);
+    }
+    return map;
+  }, [players, playerCount, visualSlot]);
 
   return (
     <svg
@@ -119,7 +154,7 @@ export default function SquareBoard({
 
       {/* ── Home quadrants ─────────────────────────────────────────────── */}
       {SQUARE_HOME_QUADRANTS.map(([qr, qc], slot) => {
-        const player = players[slot];
+        const player = players.find((p) => visualSlot(p.slotIndex) === slot);
         const color  = player ? PLAYER_COLORS[player.colorIndex] : null;
         const x = qc * CELL, y = qr * CELL;
         return (
@@ -155,8 +190,8 @@ export default function SquareBoard({
       {/* ── Track squares ──────────────────────────────────────────────── */}
       {SQUARE_TRACK.map((cell, idx) => {
         const [r, c] = cell;
-        const startSlot = starts.indexOf(idx);
-        const owner = startSlot >= 0 ? players[startSlot] : undefined;
+        const owner = displayStartOwner.get(idx);
+        const isStart = !!owner;
         const tint  = owner ? PLAYER_COLORS[owner.colorIndex].hex : undefined;
         const safe  = isSafeSquare(idx, playerCount);
         return (
@@ -169,7 +204,7 @@ export default function SquareBoard({
               strokeWidth={tint ? 1.3 : 0.9}
               rx={3}
             />
-            {safe && startSlot < 0 && (
+            {safe && !isStart && (
               // SVG <text> defaults to fill:black — without an explicit fill
               // these stars were invisible against the dark board.
               <text
@@ -181,7 +216,7 @@ export default function SquareBoard({
                 ★
               </text>
             )}
-            {startSlot >= 0 && owner && (
+            {isStart && owner && (
               <circle
                 cx={c * CELL + CELL / 2} cy={r * CELL + CELL / 2} r={4}
                 fill={tint} opacity={0.55}
@@ -193,7 +228,7 @@ export default function SquareBoard({
 
       {/* ── Home columns ───────────────────────────────────────────────── */}
       {SQUARE_HOME_COLS.map((col, slot) => {
-        const player = players[slot];
+        const player = players.find((p) => visualSlot(p.slotIndex) === slot);
         if (!player) return null;
         const color = PLAYER_COLORS[player.colorIndex];
         return col.map(([r, c], i) => (
@@ -212,7 +247,7 @@ export default function SquareBoard({
       {/* ── Centre goal: four triangles meeting in the middle ──────────── */}
       <g>
         {[0, 1, 2, 3].map((slot) => {
-          const player = players[slot];
+          const player = players.find((p) => visualSlot(p.slotIndex) === slot);
           const color = player ? PLAYER_COLORS[player.colorIndex].hex : '#333355';
           const corners: Record<number, string> = {
             0: `${GOAL_MIN},${GOAL_MAX} ${GOAL_MAX},${GOAL_MAX}`,
@@ -248,7 +283,7 @@ export default function SquareBoard({
 
       {/* ── Pieces waiting in their home base ──────────────────────────── */}
       {players.map((player) => {
-        const [qr, qc] = SQUARE_HOME_QUADRANTS[player.slotIndex] ?? [0, 0];
+        const [qr, qc] = SQUARE_HOME_QUADRANTS[visualSlot(player.slotIndex)] ?? [0, 0];
         const color = PLAYER_COLORS[player.colorIndex];
         const spots: Point[] = [
           [qc * CELL + 1.8 * CELL, qr * CELL + 1.8 * CELL],
