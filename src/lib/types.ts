@@ -80,6 +80,8 @@ export interface TurnSkippedPayload {
   playerIndex: number;
   value: number;
   isAuto: boolean;
+  /** Set when the skip is the three-6s-in-a-row forfeit, not a no-legal-move skip. */
+  reason?: 'three-sixes';
 }
 
 export interface ServerToClientEvents {

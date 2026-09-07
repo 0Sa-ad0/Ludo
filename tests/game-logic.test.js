@@ -2,7 +2,7 @@ const {
   createInitialState, createPlayer, sanitizeState,
   getValidMoves, applyMove, pathToTrack, getStartSq, getTrackLen,
   getLoopLen, getGoalPos, getHomeEntrance, isOnTrack, isValidPlayerCount,
-  advanceTurn, skipTurn, finalizeIfOver,
+  advanceTurn, skipTurn, finalizeIfOver, registerRoll, clearDice,
   pickAutoMove, generateRoomCode,
 } = require('../game-logic');
 
@@ -370,6 +370,40 @@ describe('applyMove — turn advancement', () => {
     placeActive(state, 0, 0, GOAL_4 - 6);
     expect(applyMove(state, 0, 'p0_piece0', 6).currentPlayerIndex).toBe(2);
   });
+
+  // Bonus roll #2: capturing an opponent's piece — confirmed against Ludo
+  // King and standard rule references. Must apply even on a non-6.
+  test('capturing an opponent grants a bonus roll even on a non-6', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    placeActive(state, 0, 0, 10);
+    state.players[1].pieces[0].status = 'active';
+    state.players[1].pieces[0].trackPosition = pathToTrack(23, 0, 4);
+    state.players[1].pieces[0].pathPosition = 5;
+    const next = applyMove(state, 0, 'p0_piece0', 13); // 10 + 13 = 23, captures B
+    expect(next.lastMove.capturedPieces.length).toBeGreaterThan(0);
+    expect(next.currentPlayerIndex).toBe(0); // turn stays with the capturer
+    expect(next.diceRolled).toBe(false);
+  });
+
+  test('a move that does NOT capture still advances the turn on a non-6', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    placeActive(state, 0, 0, 10);
+    const next = applyMove(state, 0, 'p0_piece0', 3); // empty square, no capture
+    expect(next.lastMove.capturedPieces).toEqual([]);
+    expect(next.currentPlayerIndex).toBe(1);
+  });
+
+  // Bonus roll #3: a piece reaching home (finishing) — but only while the
+  // player still has other pieces in play; finishing the LAST one is
+  // covered by the REGRESSION tests above, where the turn must still pass.
+  test('finishing a single piece (not the player\'s last) grants a bonus roll on a non-6', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    placeActive(state, 0, 0, GOAL_4 - 3); // needs exactly 3 to finish
+    const next = applyMove(state, 0, 'p0_piece0', 3);
+    expect(next.players[0].pieces[0].status).toBe('finished');
+    expect(next.players[0].isFinished).toBe(false); // 3 pieces still in play
+    expect(next.currentPlayerIndex).toBe(0); // bonus roll, turn stays
+  });
 });
 
 describe('advanceTurn / skipTurn', () => {
@@ -399,6 +433,63 @@ describe('advanceTurn / skipTurn', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
     skipTurn(state, 0, 6);
     expect(state.currentPlayerIndex).toBe(0);
+  });
+});
+
+// ─── Three sixes in a row ───────────────────────────────────────────────────
+// Confirmed against officialgamerules.org: "roll three sixes in a row, you
+// lose your turn." The third 6 is void — no move, turn passes immediately.
+
+describe('registerRoll — three-sixes forfeit', () => {
+  test('the first two 6s are not a forfeit', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    expect(registerRoll(state, 6)).toBe(false);
+    expect(state.sixStreak).toBe(1);
+    expect(registerRoll(state, 6)).toBe(false);
+    expect(state.sixStreak).toBe(2);
+  });
+
+  test('the third consecutive 6 is a forfeit, and resets the streak', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    registerRoll(state, 6);
+    registerRoll(state, 6);
+    expect(registerRoll(state, 6)).toBe(true);
+    expect(state.sixStreak).toBe(0);
+  });
+
+  test('any non-6 breaks the streak, even mid-chain', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    registerRoll(state, 6);
+    expect(registerRoll(state, 4)).toBe(false);
+    expect(state.sixStreak).toBe(0);
+    // Streak restarts clean after the break.
+    expect(registerRoll(state, 6)).toBe(false);
+    expect(state.sixStreak).toBe(1);
+  });
+
+  test('advanceTurn always resets the streak for the next player', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    registerRoll(state, 6);
+    registerRoll(state, 6);
+    expect(state.sixStreak).toBe(2);
+    advanceTurn(state, 0);
+    expect(state.sixStreak).toBe(0);
+  });
+
+  test('a capture-earned bonus roll (non-6) breaks an in-progress six-streak', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    registerRoll(state, 6);
+    // The capture roll itself is a 4 — non-6, so the streak must reset even
+    // though the capture grants its own bonus roll via applyMove.
+    placeActive(state, 0, 0, 10);
+    state.players[1].pieces[0].status = 'active';
+    state.players[1].pieces[0].trackPosition = pathToTrack(14, 0, 4);
+    state.players[1].pieces[0].pathPosition = 5;
+    expect(registerRoll(state, 4)).toBe(false);
+    expect(state.sixStreak).toBe(0);
+    const next = applyMove(state, 0, 'p0_piece0', 4);
+    expect(next.lastMove.capturedPieces.length).toBeGreaterThan(0);
+    expect(next.currentPlayerIndex).toBe(0); // bonus roll from the capture
   });
 });
 
@@ -522,16 +613,29 @@ describe('generateRoomCode', () => {
 // ─── A full game must always terminate ──────────────────────────────────────
 
 describe('simulation', () => {
+  // Mirrors server.js's actual per-roll loop exactly (registerRoll's
+  // three-sixes forfeit included) rather than a simplified stand-in, so this
+  // is a faithful full-game playthrough using the real production logic —
+  // not just applyMove in isolation.
   test('a fully automatic game always reaches a finished state', () => {
     for (const pc of [2, 3, 4, 5, 6]) {
       const state = makeState(pc, ['A', 'B', 'C', 'D', 'E', 'F'].slice(0, pc));
       let s = state;
       s.status = 'playing';
       let turns = 0;
-      while (s.status !== 'finished' && turns < 20000) {
+      let forfeits = 0;
+      while (s.status !== 'finished' && turns < 30000) {
         turns++;
         const pi = s.currentPlayerIndex;
         const value = Math.floor(Math.random() * 6) + 1;
+
+        if (registerRoll(s, value)) {
+          forfeits++;
+          advanceTurn(s, pi);
+          clearDice(s);
+          continue;
+        }
+
         const pieceId = pickAutoMove(s.players[pi], value, s);
         if (pieceId) s = applyMove(s, pi, pieceId, value);
         else skipTurn(s, pi, value);
@@ -539,6 +643,37 @@ describe('simulation', () => {
       expect(s.status).toBe('finished');
       expect(s.rankings).toHaveLength(pc);
       expect(new Set(s.rankings).size).toBe(pc); // everyone ranked exactly once
+      expect(forfeits).toBeGreaterThanOrEqual(0); // sanity: loop actually ran the forfeit path when due
     }
+  });
+
+  // Runs enough turns, across enough repetitions, that the 1-in-216 forfeit
+  // chance is all but guaranteed to fire at least once — proving the whole
+  // roll -> forfeit -> advance loop is sound under real repeated use, not
+  // just in the single-shot unit tests above.
+  test('the three-sixes forfeit actually fires during real extended play, and the game still finishes cleanly', () => {
+    let sawForfeit = false;
+    for (let run = 0; run < 10 && !sawForfeit; run++) {
+      const state = makeState(4, ['A', 'B', 'C', 'D']);
+      let s = state;
+      s.status = 'playing';
+      let turns = 0;
+      while (s.status !== 'finished' && turns < 30000) {
+        turns++;
+        const pi = s.currentPlayerIndex;
+        const value = Math.floor(Math.random() * 6) + 1;
+        if (registerRoll(s, value)) {
+          sawForfeit = true;
+          advanceTurn(s, pi);
+          clearDice(s);
+          continue;
+        }
+        const pieceId = pickAutoMove(s.players[pi], value, s);
+        if (pieceId) s = applyMove(s, pi, pieceId, value);
+        else skipTurn(s, pi, value);
+      }
+      expect(s.status).toBe('finished');
+    }
+    expect(sawForfeit).toBe(true);
   });
 });

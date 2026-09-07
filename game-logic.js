@@ -36,6 +36,7 @@ function createInitialState(roomCode, playerCount, passwordHash) {
     players:              [],
     diceValue:            null,
     diceRolled:           false,
+    sixStreak:            0,
     lastMove:             null,
     winner:               null,
     rankings:             [],
@@ -94,7 +95,27 @@ function advanceTurn(state, fromIndex) {
     next = (next + 1) % pc;
   }
   state.currentPlayerIndex = next;
+  // Whoever's turn it is now starts with a clean six-streak, regardless of
+  // what the previous player's streak was.
+  state.sixStreak = 0;
   return state;
+}
+
+/**
+ * Track consecutive 6s within one player's unbroken run of rolls (bonus
+ * rolls chain the same turn together; any non-6 breaks the streak even if
+ * it earns its own bonus via a capture or a finish). Confirmed against
+ * officialgamerules.org: "roll three sixes in a row, you lose your turn" —
+ * the third 6 is void, no move, turn passes immediately. Mutates
+ * state.sixStreak. Returns true when THIS roll must be forfeited.
+ */
+function registerRoll(state, diceValue) {
+  state.sixStreak = diceValue === 6 ? (state.sixStreak || 0) + 1 : 0;
+  if (state.sixStreak >= 3) {
+    state.sixStreak = 0;
+    return true;
+  }
+  return false;
 }
 
 /** Clear the roll so the next player starts from a clean slate. Mutates. */
@@ -200,9 +221,14 @@ function applyMove(state, playerIndex, pieceId, diceValue) {
   }
 
   // ── Hand over the turn ─────────────────────────────────────────────────
-  // A 6 earns another roll — but not if that move just finished the player,
-  // since there is no longer anyone to take the bonus turn.
-  if (diceValue !== 6 || player.isFinished) advanceTurn(s, playerIndex);
+  // Three things earn a bonus roll: rolling a 6, capturing an opponent's
+  // piece, and getting a piece all the way home — standard across Ludo King
+  // and most physical rule sets. None of that matters if this move just
+  // finished the player (all 4 pieces home): there is no longer anyone left
+  // to take the bonus turn, so the turn must always pass on.
+  const pieceFinishedThisMove = piece.status === 'finished';
+  const earnedBonusRoll = diceValue === 6 || capturedPieces.length > 0 || pieceFinishedThisMove;
+  if (!earnedBonusRoll || player.isFinished) advanceTurn(s, playerIndex);
   clearDice(s);
 
   s.lastMove = { playerIndex, pieceId, isAuto: false, capturedPieces };
@@ -230,6 +256,6 @@ module.exports = {
   isOnTrack, pathToTrack, getHomeEntrance, isValidPlayerCount, getValidMoves,
   // state transitions
   generateRoomCode, createInitialState, sanitizeState, createPlayer,
-  advanceTurn, clearDice, skipTurn, finalizeIfOver,
+  advanceTurn, clearDice, skipTurn, finalizeIfOver, registerRoll,
   applyMove, pickAutoMove, rollDie,
 };

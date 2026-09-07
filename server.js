@@ -13,7 +13,7 @@ const bcrypt           = require('bcryptjs');
 const {
   generateRoomCode, createInitialState, sanitizeState, createPlayer,
   getValidMoves, applyMove, pickAutoMove, rollDie,
-  advanceTurn, clearDice, skipTurn, finalizeIfOver,
+  advanceTurn, clearDice, skipTurn, finalizeIfOver, registerRoll,
   isValidPlayerCount, MIN_PLAYERS, MAX_PLAYERS,
 } = require('./game-logic');
 
@@ -257,6 +257,7 @@ async function playAutomaticTurn(io, roomCode, { abortIfConnected = false } = {}
 
   if (!state.diceRolled) {
     const value = rollDie();
+    const forfeited = registerRoll(state, value);
     state.diceValue  = value;
     state.diceRolled = true;
     touch(state);
@@ -264,6 +265,22 @@ async function playAutomaticTurn(io, roomCode, { abortIfConnected = false } = {}
 
     io.to(roomCode).emit('dice_rolled', { playerIndex: pi, value, isAuto: true });
     broadcastState(io, roomCode, state);
+
+    if (forfeited) {
+      // Same reasoning as the human roll_dice handler: void synchronously,
+      // no sleep — a 6 almost always has a legal move, so pausing here would
+      // leave a window where the player (if they reconnect mid-pause) could
+      // sneak a move in against the still-live roll before the forfeit
+      // takes effect.
+      io.to(roomCode).emit('turn_skipped', { playerIndex: pi, value, isAuto: true, reason: 'three-sixes' });
+      advanceTurn(state, pi);
+      clearDice(state);
+      touch(state);
+      bumpTurn(roomCode);
+      broadcastState(io, roomCode, state);
+      await saveGameState(state);
+      return armTurn(io, roomCode);
+    }
 
     await sleep(AUTO_MOVE_DELAY_MS);
     // A human (or another timer) acted while we were waiting — their state wins.
@@ -563,6 +580,7 @@ Promise.all([app.prepare(), initDb()]).then(() => {
       if (player.isFinished)                     return;
 
       const value = rollDie();
+      const forfeited = registerRoll(state, value);
       state.diceValue  = value;
       state.diceRolled = true;
       touch(state);
@@ -570,6 +588,28 @@ Promise.all([app.prepare(), initDb()]).then(() => {
 
       io.to(roomCode).emit('dice_rolled', { playerIndex, value });
       broadcastState(io, roomCode, state);
+
+      // Three 6s in a row voids the roll entirely — no move, turn passes
+      // immediately, even though a 6 would otherwise let them act. This is
+      // deliberately NOT delayed like the no-legal-move skip below: a 6
+      // almost always has a legal move sitting there, so pausing here (as
+      // the no-legal-move path safely does, precisely because it has no
+      // legal move to exploit) would leave a real window where a fast
+      // client could sneak `move_piece` in against the still-live roll
+      // before the forfeit takes effect — a genuine way to cheat the rule.
+      // Everything below runs synchronously, in the same tick as the roll
+      // itself, so no other socket event for this room can be processed
+      // in between.
+      if (forfeited) {
+        io.to(roomCode).emit('turn_skipped', { playerIndex, value, isAuto: false, reason: 'three-sixes' });
+        advanceTurn(state, playerIndex);
+        clearDice(state);
+        touch(state);
+        bumpTurn(roomCode);
+        broadcastState(io, roomCode, state);
+        await saveGameState(state);
+        return armTurn(io, roomCode);
+      }
 
       if (getValidMoves(player, value, state).length > 0) {
         // They have a decision to make — restart the idle clock for it.
@@ -769,10 +809,50 @@ Promise.all([app.prepare(), initDb()]).then(() => {
     for (const name of Object.keys(nets)) {
       for (const net of nets[name]) {
         if (net.family === 'IPv4' && !net.internal) {
-          console.log(`   Network: http://${net.address}:${port}  ← Share this on WiFi`);
+          const lanUrl = `http://${net.address}:${port}`;
+          console.log(`   Network: ${lanUrl}  ← Share this on WiFi`);
+          // First non-internal IPv4 wins — good enough on the single-NIC
+          // machines this actually runs on, and used as the share-link base
+          // whenever a client opened the page via localhost (where
+          // window.location.origin would otherwise produce a dead link for
+          // everyone else).
+          if (!global.__LUDO_LAN_URL) global.__LUDO_LAN_URL = lanUrl;
         }
       }
     }
     console.log('');
+    detectNgrokUrl();
   });
 });
+
+/**
+ * Poll ngrok's local API for the tunnel it opened, if one is running, and
+ * publish it so the client can show/share a real internet-reachable URL
+ * instead of the dead `/api/public-url` stub that used to always return
+ * null. start.bat/start.sh launch ngrok in a separate window and never
+ * capture its output, so this is the only place that ever learns the URL.
+ *
+ * Silently gives up if ngrok isn't installed/running — that's the normal
+ * LAN-only case, not an error.
+ */
+async function detectNgrokUrl(attempt = 0) {
+  const MAX_ATTEMPTS = 10;
+  const RETRY_MS = 2000;
+  try {
+    const res = await fetch('http://127.0.0.1:4040/api/tunnels');
+    if (res.ok) {
+      const data = await res.json();
+      const tunnels = data.tunnels || [];
+      const tunnel = tunnels.find((t) => t.proto === 'https') || tunnels[0];
+      if (tunnel?.public_url) {
+        global.__LUDO_PUBLIC_URL = tunnel.public_url;
+        console.log(`[NGROK] Public URL detected: ${tunnel.public_url}`);
+        return;
+      }
+    }
+  } catch { /* ngrok not up yet (or not running at all) — retry a few times */ }
+
+  if (attempt < MAX_ATTEMPTS) {
+    setTimeout(() => detectNgrokUrl(attempt + 1), RETRY_MS).unref?.();
+  }
+}

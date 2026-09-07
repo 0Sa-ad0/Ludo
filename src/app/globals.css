@@ -1,4 +1,20 @@
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Inter:wght@300;400;500;600&display=swap');
+/* Self-hosted (public/fonts/) so the game renders correctly with zero
+   internet access — the whole point of LAN play. A single variable-font
+   file backs every weight declared below; that's normal, not a mistake. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 300 600;
+  font-display: swap;
+  src: url('/fonts/inter-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbitron';
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url('/fonts/orbitron-latin.woff2') format('woff2');
+}
 
 /* ─── CSS Variables ──────────────────────────────────────────────────────────── */
 :root {

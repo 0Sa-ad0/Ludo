@@ -51,7 +51,6 @@ export default function GamePage({ params }: GamePageProps) {
   const [rollingDice, setRolling]     = useState(false);
   const [movingPiece, setMovingPiece] = useState<string | null>(null);
   const [capturing, setCapturing]     = useState<string | null>(null);
-  const [shareUrl, setShareUrl]       = useState('');
   const [connecting, setConnecting]   = useState(true);
   const [kicked, setKicked]           = useState(false);
   // Opening a shared /game/CODE link has no stored name, so ask for one
@@ -79,6 +78,22 @@ export default function GamePage({ params }: GamePageProps) {
 
   // ── Decide up front whether we have enough to join ──────────────────────
   const [joinInfo, setJoinInfo] = useState<(StoredJoin & { playerCount?: number }) | null>(null);
+
+  // The base to build the share link from. `window.location.origin` is wrong
+  // whenever the host opened the page via localhost — that URL means nothing
+  // on anyone else's device. Prefer, in order: a detected ngrok public URL,
+  // then the server's own LAN-advertised address (fixes the localhost case),
+  // then finally the page's own origin (already correct if opened via LAN IP
+  // or ngrok's forwarded domain).
+  const [publicBase, setPublicBase] = useState<{ url: string | null; lanUrl: string | null }>({
+    url: null, lanUrl: null,
+  });
+  useEffect(() => {
+    fetch('/api/public-url')
+      .then((r) => r.json())
+      .then((d) => setPublicBase({ url: d.url ?? null, lanUrl: d.lanUrl ?? null }))
+      .catch(() => {});
+  }, []);
 
   // sessionStorage doesn't exist during SSR, so this decision can only be made
   // after mount — reading it during render would break hydration.
@@ -125,7 +140,6 @@ export default function GamePage({ params }: GamePageProps) {
     socket.on('room_created', ({ roomCode: rc, playerIndex }) => {
       setRoomCode(rc);
       setMyIndex(playerIndex);
-      setShareUrl(`${window.location.origin}/game/${rc}`);
       // Swap the address bar from /game/create to the real code — otherwise a
       // refresh spins up a brand-new room and strands the host's seat.
       window.history.replaceState(null, '', `/game/${rc}`);
@@ -138,7 +152,6 @@ export default function GamePage({ params }: GamePageProps) {
 
     socket.on('joined', ({ playerIndex }) => {
       setMyIndex(playerIndex);
-      setShareUrl(`${window.location.origin}/game/${roomId}`);
       try {
         sessionStorage.setItem(STORAGE_ROOM(roomId), JSON.stringify({
           playerName: joinInfo.playerName, password: joinInfo.password ?? '',
@@ -180,11 +193,17 @@ export default function GamePage({ params }: GamePageProps) {
       }
     });
 
-    socket.on('turn_skipped', ({ playerIndex, value }: TurnSkippedPayload) => {
+    socket.on('turn_skipped', ({ playerIndex, value, reason }: TurnSkippedPayload) => {
       playRef.current.skip();
       setRolling(false);
       const mine = playerIndex === myIndexRef.current;
       const who = mine ? 'You' : (nameOf(playerIndex) ?? 'Player');
+
+      if (reason === 'three-sixes') {
+        toast(`🎲🎲🎲 Three 6s in a row — ${mine ? 'your' : `${who}'s`} turn is forfeited!`);
+        return;
+      }
+
       // A 6 keeps the turn, so "skipped" would be wrong — they roll again.
       const outcome = value === 6
         ? (mine ? 'Roll again.' : `${who} rolls again.`)
@@ -222,6 +241,19 @@ export default function GamePage({ params }: GamePageProps) {
   useEffect(() => () => { if (rollTimerRef.current) clearTimeout(rollTimerRef.current); }, []);
 
   // ── Derived ─────────────────────────────────────────────────────────────
+  const shareUrl = useMemo(() => {
+    const code = roomCode || (isCreate ? '' : roomId);
+    if (!code || typeof window === 'undefined') return '';
+    let base = window.location.origin;
+    if (publicBase.url) {
+      base = publicBase.url;
+    } else if (publicBase.lanUrl) {
+      const host = window.location.hostname;
+      if (host === 'localhost' || host === '127.0.0.1') base = publicBase.lanUrl;
+    }
+    return `${base}/game/${code}`;
+  }, [roomCode, roomId, isCreate, publicBase]);
+
   const myPlayer  = gameState?.players[myPlayerIndex];
   const isMyTurn  = gameState?.status === 'playing' && gameState.currentPlayerIndex === myPlayerIndex;
   const isHex     = !!gameState && gameState.playerCount >= 5;

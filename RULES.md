@@ -47,8 +47,19 @@ Unused corners/arms are greyed out and labelled EMPTY.
 1. On your turn, tap the **Roll** button
 2. The dice tumbles and settles on 1–6
 3. Move **one** of your pieces forward by that number
-4. **Rolling a 6** earns a **bonus roll** after your move — unlimited consecutive 6s
-5. If you have **no legal move**, your turn is skipped automatically and everyone
+4. You earn a **bonus roll** — same turn, roll again — whenever any of these happen:
+   - You roll a **6** (unlimited consecutive 6s)
+   - You **capture** an opponent's piece
+   - A piece of yours **reaches home** (finishes)
+
+   These stack independently but never double up — landing a capture with a
+   6, for instance, is still just one bonus roll, exactly like the physical
+   game.
+5. **Three 6s in a row forfeits the turn** — the third consecutive 6 is void:
+   no move, turn passes immediately, even though it's a 6. Any non-6 in
+   between resets the streak, even if that roll earned its own bonus via a
+   capture or a finish.
+6. If you have **no legal move**, your turn is skipped automatically and everyone
    is told why (`🎲 4 — no legal move`)
 
 ---

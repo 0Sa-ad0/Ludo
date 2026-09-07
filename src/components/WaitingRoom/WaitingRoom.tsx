@@ -26,12 +26,36 @@ export default function WaitingRoom({
   const joined = gameState.players.length;
   const canStartEarly = isHost && joined >= MIN_PLAYERS && joined < gameState.playerCount;
 
+  // navigator.clipboard requires a "secure context" — HTTPS, or localhost.
+  // This app's whole point is playing over plain http://<LAN-IP>, which the
+  // browser does NOT consider secure, so `navigator.clipboard` is undefined
+  // there and the async API silently does nothing. execCommand('copy') is
+  // deprecated but, unlike the Clipboard API, isn't gated on a secure
+  // context — it's the only thing that actually copies text on that origin.
+  function legacyCopy(text: string): boolean {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
   async function copy(text: string, which: 'code' | 'url') {
-    try {
-      await navigator.clipboard.writeText(text);
+    let ok = false;
+    if (navigator.clipboard) {
+      try { await navigator.clipboard.writeText(text); ok = true; } catch { ok = false; }
+    }
+    if (!ok) ok = legacyCopy(text);
+    if (ok) {
       setCopied(which);
       setTimeout(() => setCopied((c) => (c === which ? null : c)), 2000);
-    } catch { /* clipboard blocked (insecure origin) — the text is on screen anyway */ }
+    }
   }
 
   return (
