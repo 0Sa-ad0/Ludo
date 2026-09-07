@@ -7,7 +7,7 @@ import {
   SQUARE_CELL as CELL, SQUARE_SIZE as SIZE,
   SQUARE_TRACK, SQUARE_HOME_COLS, SQUARE_HOME_QUADRANTS,
   getLoopLen, isOnTrack, pathToTrack, isSafeSquare,
-  getValidMoves,
+  getValidMoves, squareArm,
 } from '@/lib/board';
 import styles from './SquareBoard.module.css';
 
@@ -55,13 +55,20 @@ export default function SquareBoard({
    *     For 3–4 players it's a plain rotation that preserves everyone's
    *     relative (turn) order around the board.
    *
-   * Game logic (server state, piece ids, capture rules) is untouched — this
-   * only decides where things are drawn, never what's true.
+   * `squareArm` (from rules.js — the same function the server uses to place
+   * pieces on the track) is the single source of truth for which arm a slot
+   * REALLY occupies; this only rotates that real arm to sit at 0 for the
+   * viewer. Because both the real game state and this display transform go
+   * through the same `squareArm`, the mapping is a genuine rotation — two
+   * pieces can only ever render on the same cell if they're really on the
+   * same square. (An earlier version used a display-only remap that didn't
+   * match the real geometry, which could draw two pieces as if they'd
+   * collided when they hadn't — see squareArm's own comment for why that's
+   * unsafe.)
    */
   const visualSlot = useMemo(() => {
-    const canonical = (s: number) => (playerCount === 2 ? (s === 0 ? 0 : 2) : s);
-    const viewerCanonical = myPlayerIndex >= 0 ? canonical(myPlayerIndex) : 0;
-    return (realSlot: number) => (canonical(realSlot) - viewerCanonical + 4) % 4;
+    const viewerArm = myPlayerIndex >= 0 ? squareArm(myPlayerIndex, playerCount) : 0;
+    return (realSlot: number) => (squareArm(realSlot, playerCount) - viewerArm + 4) % 4;
   }, [playerCount, myPlayerIndex]);
 
   // The server is the authority; this only decides what to highlight, so it

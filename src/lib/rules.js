@@ -60,8 +60,26 @@ function getGoalPos(pc) { return getLoopLen(pc) + HOME_COLUMN_LEN; }
 /** @param {number} pc */
 function getSafeSet(pc) { return isSquareBoard(pc) ? SQUARE_SAFE : HEX_SAFE; }
 
+/**
+ * Which of the 4 square-board arms a slot actually starts on. Identity for
+ * everything except a 2-player game: there, the two players sit on the
+ * DIAGONAL arms (0 and 2), not two adjacent ones — the classic 2-player
+ * Ludo layout, opponents across the board rather than side by side.
+ *
+ * This is real geometry, not a rendering trick: it changes actual capture
+ * distance and safe-square proximity for 2-player games. It has to be —
+ * anything that instead just draws the pieces in different corners while
+ * their true positions stay 13 apart (adjacent) can make two pieces that
+ * are NOT on the same square appear to visually collide, which is worse
+ * than not having the feature at all.
+ * @param {number} slotIndex @param {number} pc
+ */
+function squareArm(slotIndex, pc) {
+  return pc === 2 ? (slotIndex === 0 ? 0 : 2) : slotIndex;
+}
+
 /** @param {number} idx slotIndex @param {number} pc */
-function getStartSq(idx, pc) { return isSquareBoard(pc) ? SQUARE_START[idx] : HEX_START[idx]; }
+function getStartSq(idx, pc) { return isSquareBoard(pc) ? SQUARE_START[squareArm(idx, pc)] : HEX_START[idx]; }
 
 /** True while the piece is still on the shared track (and so capturable). */
 function isOnTrack(pathPosition, pc) {
@@ -230,7 +248,7 @@ module.exports = {
   SQUARE_TRACK_LEN, HEX_TRACK_LEN,
   SQUARE_START, HEX_START, SQUARE_SAFE, HEX_SAFE,
   isSquareBoard, getTrackLen, getLoopLen, getGoalPos, getSafeSet, getStartSq,
-  isOnTrack, pathToTrack, getHomeEntrance, isValidPlayerCount, getValidMoves,
+  isOnTrack, pathToTrack, getHomeEntrance, isValidPlayerCount, getValidMoves, squareArm,
   // square geometry
   SQUARE_GRID, SQUARE_CELL, SQUARE_SIZE,
   SQUARE_TRACK, SQUARE_HOME_COLS, SQUARE_HOME_QUADRANTS,

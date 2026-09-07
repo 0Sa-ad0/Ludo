@@ -8,7 +8,7 @@ const {
 
 const {
   SQUARE_TRACK, SQUARE_HOME_COLS, HEX_TRACK, HEX_HOME_COLS, HEX_HOME_BASES,
-  HEX_VIEW,
+  HEX_VIEW, squareArm,
 } = require('../src/lib/rules');
 
 // The square board is 4 players -> goal 56; the hex board is 6 -> goal 64.
@@ -112,6 +112,71 @@ describe('square board geometry', () => {
     expect(SQUARE_TRACK[getStartSq(1, 4)]).toEqual([6, 1]);
     expect(SQUARE_TRACK[getStartSq(2, 4)]).toEqual([1, 8]);
     expect(SQUARE_TRACK[getStartSq(3, 4)]).toEqual([8, 13]);
+  });
+
+  // REGRESSION: a 2-player game used to put both players on adjacent arms
+  // (13 squares apart, same as slots 0/1 in a 4-player game). The board
+  // renders 2-player games with opponents diagonally across from each
+  // other, which only stays collision-safe (no two genuinely-different
+  // squares ever rendering as if they'd collided) if the REAL geometry is
+  // actually diagonal too — see squareArm's own comment in rules.js.
+  test('a 2-player game puts the two players on diagonally opposite arms', () => {
+    expect(getStartSq(0, 2)).toBe(0);
+    expect(getStartSq(1, 2)).toBe(26); // half the 52-square loop away, not 13
+    expect(SQUARE_TRACK[getStartSq(1, 2)]).toEqual([1, 8]); // slot 2's classic arm
+  });
+
+  test('3- and 4-player games are unaffected — still adjacent arms', () => {
+    expect(getStartSq(1, 3)).toBe(13);
+    expect(getStartSq(1, 4)).toBe(13);
+  });
+});
+
+// ─── Board-rendering rotation: exhaustive collision safety ─────────────────
+// REGRESSION: an earlier version of the "always show my own base bottom-left,
+// and diagonal in a 2-player game" board rotation computed DISPLAY position
+// with a different mapping than the REAL game geometry used. That let two
+// pieces on genuinely different squares render as if they'd collided — an
+// opponent's piece appeared to sit on top of your own with no capture, which
+// is exactly the kind of thing a player notices immediately and a human
+// tester might not stumble on by luck. This test doesn't rely on luck: it
+// exhaustively checks every track position, for every viewer, for every
+// player count the square board supports, replicating the exact formula
+// SquareBoard.tsx uses (visualSlot), built only from the same squareArm/
+// pathToTrack the server itself uses for real captures.
+describe('board display rotation — exhaustive collision safety', () => {
+  function visualSlot(realSlot, pc, viewerSlot) {
+    const viewerArm = squareArm(viewerSlot, pc);
+    return (squareArm(realSlot, pc) - viewerArm + 4) % 4;
+  }
+
+  test('two pieces render on the same cell if and only if they are really on the same square', () => {
+    for (const pc of [2, 3, 4]) {
+      const loopLen = getLoopLen(pc);
+      for (let viewer = 0; viewer < pc; viewer++) {
+        for (let a = 0; a < pc; a++) {
+          for (let b = 0; b < pc; b++) {
+            if (a === b) continue;
+            for (let pa = 0; pa < loopLen; pa += 3) {       // every 3rd square —
+              for (let pb = 0; pb < loopLen; pb += 3) {     // exhaustive enough,
+                const realA = pathToTrack(pa, a, pc);        // fast enough
+                const realB = pathToTrack(pb, b, pc);
+                const dispA = pathToTrack(pa, visualSlot(a, pc, viewer), pc);
+                const dispB = pathToTrack(pb, visualSlot(b, pc, viewer), pc);
+                const reallySame  = realA === realB;
+                const looksTheSame = dispA === dispB;
+                if (reallySame !== looksTheSame) {
+                  throw new Error(
+                    `false ${looksTheSame ? 'collision' : 'separation'}: pc=${pc} viewer=${viewer} ` +
+                    `A(slot${a},path${pa})=real${realA}/disp${dispA} vs B(slot${b},path${pb})=real${realB}/disp${dispB}`
+                  );
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   });
 });
 
@@ -325,6 +390,32 @@ describe('applyMove — capturing', () => {
     placeActive(state, 0, 0, 10);
     const next = applyMove(state, 0, 'p0_piece0', 5);
     expect(next.players[1].pieces[0].status).toBe('active');
+    expect(next.lastMove.capturedPieces).toEqual([]);
+  });
+
+  // A 2-player game's two arms are diagonally opposite (26 apart, not 13) —
+  // capture must still work correctly across that real distance. Target
+  // absolute track 30 — deliberately NOT a start/safe square (those are
+  // exactly the multiples of 13: 0, 13, 26, 39), so the capture isn't
+  // accidentally blocked by safety instead of proving the real thing.
+  test('capture works correctly on a 2-player game\'s diagonal arms', () => {
+    const state = makeState(2, ['A', 'B']);
+    placeActive(state, 1, 0, 4); // B: pathPosition 4 -> absolute track 26+4=30
+    expect(state.players[1].pieces[0].trackPosition).toBe(30);
+    placeActive(state, 0, 0, 24); // A: pathPosition 24 -> absolute track 24 (arm 0)
+    const next = applyMove(state, 0, 'p0_piece0', 6); // 24 + 6 = 30, lands on B
+    expect(next.players[1].pieces[0].status).toBe('home');
+    expect(next.lastMove.capturedPieces).toEqual([{ id: 'p1_piece0', playerName: 'B' }]);
+  });
+
+  test('a 2-player game does NOT falsely capture at the old (adjacent-arm) distance', () => {
+    const state = makeState(2, ['A', 'B']);
+    placeActive(state, 1, 0, 4); // B at absolute track 30 (see above)
+    placeActive(state, 0, 0, 11);
+    const next = applyMove(state, 0, 'p0_piece0', 6); // A lands at absolute 17 — the
+    // OLD (wrong) geometry would have put B at 13+4=17, matching this; the
+    // NEW correct geometry puts B at 30, so this must NOT capture.
+    expect(next.players[1].pieces[0].status).toBe('active'); // untouched
     expect(next.lastMove.capturedPieces).toEqual([]);
   });
 });

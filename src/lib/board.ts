@@ -39,6 +39,7 @@ export const getLoopLen      = rules.getLoopLen as (pc: number) => number;
 export const getGoalPos      = rules.getGoalPos as (pc: number) => number;
 export const getStartSq      = rules.getStartSq as (slot: number, pc: number) => number;
 export const getHomeEntrance = rules.getHomeEntrance as (slot: number, pc: number) => number;
+export const squareArm       = rules.squareArm as (slot: number, pc: number) => number;
 export const isOnTrack       = rules.isOnTrack as (pathPos: number, pc: number) => boolean;
 export const pathToTrack     = rules.pathToTrack as (pathPos: number, slot: number, pc: number) => number;
 export const hexCorner       = rules.hexCorner as (k: number) => Point;
