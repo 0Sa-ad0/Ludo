@@ -73,6 +73,8 @@ export interface PieceMovedPayload {
   playerIndex: number;
   pieceId: string;
   isAuto?: boolean;
+  /** The server played this move on the player's behalf because it was the only legal one. */
+  forced?: boolean;
   capturedPieces: CapturedPiece[];
 }
 

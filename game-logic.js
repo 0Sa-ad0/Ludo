@@ -12,8 +12,7 @@ const rules = require('./src/lib/rules');
 
 const {
   PIECES_PER_PLAYER, HOME_COLUMN_LEN, MIN_PLAYERS, MAX_PLAYERS,
-  SQUARE_TRACK_LEN, HEX_TRACK_LEN,
-  SQUARE_START, HEX_START, SQUARE_SAFE, HEX_SAFE,
+  SQUARE_TRACK_LEN, SQUARE_START, SQUARE_SAFE,
   getTrackLen, getLoopLen, getGoalPos, getSafeSet, getStartSq,
   isOnTrack, pathToTrack, getHomeEntrance, isValidPlayerCount, getValidMoves,
 } = rules;
@@ -250,8 +249,7 @@ function rollDie() {
 module.exports = {
   // re-exported rules, so server.js has a single import
   PIECES_PER_PLAYER, HOME_COLUMN_LEN, MIN_PLAYERS, MAX_PLAYERS,
-  SQUARE_TRACK_LEN, HEX_TRACK_LEN,
-  SQUARE_START, HEX_START, SQUARE_SAFE, HEX_SAFE,
+  SQUARE_TRACK_LEN, SQUARE_START, SQUARE_SAFE,
   getTrackLen, getLoopLen, getGoalPos, getSafeSet, getStartSq,
   isOnTrack, pathToTrack, getHomeEntrance, isValidPlayerCount, getValidMoves,
   // state transitions

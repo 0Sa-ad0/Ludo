@@ -15,7 +15,6 @@ export const {
   MIN_PLAYERS,
   MAX_PLAYERS,
   SQUARE_TRACK_LEN,
-  HEX_TRACK_LEN,
   SQUARE_GRID,
   SQUARE_CELL,
   SQUARE_SIZE,
@@ -29,11 +28,9 @@ export const {
 export const SQUARE_TRACK           = rules.SQUARE_TRACK as Point[];
 export const SQUARE_HOME_COLS       = rules.SQUARE_HOME_COLS as Point[][];
 export const SQUARE_HOME_QUADRANTS  = rules.SQUARE_HOME_QUADRANTS as Point[];
-export const HEX_TRACK              = rules.HEX_TRACK as Point[];
-export const HEX_HOME_COLS          = rules.HEX_HOME_COLS as Point[][];
-export const HEX_HOME_BASES         = rules.HEX_HOME_BASES as Point[];
 
 export const isSquareBoard   = rules.isSquareBoard as (pc: number) => boolean;
+export const getHexArms      = rules.getHexArms as (pc: number) => number;
 export const getTrackLen     = rules.getTrackLen as (pc: number) => number;
 export const getLoopLen      = rules.getLoopLen as (pc: number) => number;
 export const getGoalPos      = rules.getGoalPos as (pc: number) => number;
@@ -42,7 +39,11 @@ export const getHomeEntrance = rules.getHomeEntrance as (slot: number, pc: numbe
 export const squareArm       = rules.squareArm as (slot: number, pc: number) => number;
 export const isOnTrack       = rules.isOnTrack as (pathPos: number, pc: number) => boolean;
 export const pathToTrack     = rules.pathToTrack as (pathPos: number, slot: number, pc: number) => number;
-export const hexCorner       = rules.hexCorner as (k: number) => Point;
+export const hexCorner       = rules.hexCorner as (k: number, arms: number) => Point;
+/** A hex board's track cells, walked clockwise; length varies with player count (5-arm vs 6-arm). */
+export const getHexTrack     = rules.getHexTrack as (pc: number) => Point[];
+export const getHexHomeCols  = rules.getHexHomeCols as (pc: number) => Point[][];
+export const getHexHomeBases = rules.getHexHomeBases as (pc: number) => Point[];
 
 const safeSetFor = rules.getSafeSet as (pc: number) => Set<number>;
 export const isSafeSquare = (trackIndex: number, pc: number) => safeSetFor(pc).has(trackIndex);
@@ -62,6 +63,6 @@ export const getValidMoves = rules.getValidMoves as (
 
 /** Every start square, so the board can tint them in their owner's colour. */
 export function startSquares(playerCount: number): number[] {
-  const slots = rules.isSquareBoard(playerCount) ? 4 : 6;
+  const slots = rules.isSquareBoard(playerCount) ? 4 : rules.getHexArms(playerCount);
   return Array.from({ length: slots }, (_, i) => rules.getStartSq(i, playerCount));
 }

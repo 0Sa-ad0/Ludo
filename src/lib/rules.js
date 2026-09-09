@@ -29,23 +29,28 @@ const MIN_PLAYERS       = 2;
 const MAX_PLAYERS       = 6;
 
 const SQUARE_TRACK_LEN = 52;   // 2–4 players, classic 15×15 board
-const HEX_TRACK_LEN    = 60;   // 5–6 players, 6-arm star board
+const HEX_CELLS_PER_ARM = 10;  // 5–6 players: each arm contributes 10 track cells
 
 const SQUARE_START = { 0: 0, 1: 13, 2: 26, 3: 39 };
-const HEX_START    = { 0: 0, 1: 10, 2: 20, 3: 30, 4: 40, 5: 50 };
 
 // Safe squares = every start square, plus the "star" square 8 steps past each
 // start. A piece standing on one can never be captured.
 const SQUARE_SAFE = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
-const HEX_SAFE    = new Set([0, 8, 10, 18, 20, 28, 30, 38, 40, 48, 50, 58]);
 
 // ─── Board selection ─────────────────────────────────────────────────────────
 
 /** @param {number} pc playerCount */
 function isSquareBoard(pc) { return pc <= 4; }
 
+/**
+ * A hex-board game has exactly as many arms as players — a 5-player game is
+ * a true pentagon, a 6-player game a true hexagon, not a hexagon with one
+ * arm left empty. @param {number} pc
+ */
+function getHexArms(pc) { return pc; }
+
 /** Number of squares on the shared outer track. @param {number} pc */
-function getTrackLen(pc) { return isSquareBoard(pc) ? SQUARE_TRACK_LEN : HEX_TRACK_LEN; }
+function getTrackLen(pc) { return isSquareBoard(pc) ? SQUARE_TRACK_LEN : getHexArms(pc) * HEX_CELLS_PER_ARM; }
 
 /**
  * How many track squares a single piece walks before turning into its home
@@ -58,7 +63,17 @@ function getLoopLen(pc) { return getTrackLen(pc) - 1; }
 function getGoalPos(pc) { return getLoopLen(pc) + HOME_COLUMN_LEN; }
 
 /** @param {number} pc */
-function getSafeSet(pc) { return isSquareBoard(pc) ? SQUARE_SAFE : HEX_SAFE; }
+function getHexSafeSet(pc) {
+  const safe = new Set();
+  for (let arm = 0; arm < getHexArms(pc); arm++) {
+    safe.add(arm * HEX_CELLS_PER_ARM);
+    safe.add(arm * HEX_CELLS_PER_ARM + 8);
+  }
+  return safe;
+}
+
+/** @param {number} pc */
+function getSafeSet(pc) { return isSquareBoard(pc) ? SQUARE_SAFE : getHexSafeSet(pc); }
 
 /**
  * Which of the 4 square-board arms a slot actually starts on. Identity for
@@ -79,7 +94,7 @@ function squareArm(slotIndex, pc) {
 }
 
 /** @param {number} idx slotIndex @param {number} pc */
-function getStartSq(idx, pc) { return isSquareBoard(pc) ? SQUARE_START[squareArm(idx, pc)] : HEX_START[idx]; }
+function getStartSq(idx, pc) { return isSquareBoard(pc) ? SQUARE_START[squareArm(idx, pc)] : idx * HEX_CELLS_PER_ARM; }
 
 /** True while the piece is still on the shared track (and so capturable). */
 function isOnTrack(pathPosition, pc) {
@@ -193,35 +208,44 @@ const HEX_R_COL_OUTER = 236;  // first (outermost) home-column cell
 const HEX_R_COL_INNER = 84;   // last home-column cell, just outside the goal
 const HEX_R_BASE      = 172;  // distance from centre to a home-base centre
 const HEX_R_GOAL      = 48;
-const HEX_CELLS_PER_EDGE = HEX_TRACK_LEN / 6; // 10
 
-/** Corner k of the hexagon; corner 0 is straight up. */
-function hexCorner(k) {
-  const a = (k % 6) * (Math.PI / 3) - Math.PI / 2;
+/**
+ * Corner k of the board polygon; corner 0 is straight up. `arms` is the
+ * player count — this is what turns a 5-player board into a true pentagon
+ * and a 6-player board into a true hexagon, instead of always drawing six
+ * corners and leaving one arm empty.
+ * @param {number} k @param {number} arms
+ */
+function hexCorner(k, arms) {
+  const a = (k % arms) * ((2 * Math.PI) / arms) - Math.PI / 2;
   return [HEX_CX + HEX_R_TRACK * Math.cos(a), HEX_CY + HEX_R_TRACK * Math.sin(a)];
 }
 
-/** The 60 track cells, walked clockwise around the hexagon perimeter. */
-const HEX_TRACK = Array.from({ length: HEX_TRACK_LEN }, (_, i) => {
-  const edge = Math.floor(i / HEX_CELLS_PER_EDGE);
-  const t    = (i % HEX_CELLS_PER_EDGE) / HEX_CELLS_PER_EDGE;
-  const [x0, y0] = hexCorner(edge);
-  const [x1, y1] = hexCorner(edge + 1);
-  return [x0 + (x1 - x0) * t, y0 + (y1 - y0) * t];
-});
+/** The track cells, walked clockwise around the polygon perimeter. @param {number} pc */
+function getHexTrack(pc) {
+  const arms = getHexArms(pc);
+  return Array.from({ length: arms * HEX_CELLS_PER_ARM }, (_, i) => {
+    const edge = Math.floor(i / HEX_CELLS_PER_ARM);
+    const t    = (i % HEX_CELLS_PER_ARM) / HEX_CELLS_PER_ARM;
+    const [x0, y0] = hexCorner(edge, arms);
+    const [x1, y1] = hexCorner(edge + 1, arms);
+    return [x0 + (x1 - x0) * t, y0 + (y1 - y0) * t];
+  });
+}
 
-/** Angle from the centre to a player's home-column entrance square. */
-function hexArmAngle(playerIndex) {
-  const [ex, ey] = HEX_TRACK[getHomeEntrance(playerIndex, 6)];
+/** Angle from the centre to a player's home-column entrance square. @param {number} playerIndex @param {number} pc */
+function hexArmAngle(playerIndex, pc) {
+  const [ex, ey] = getHexTrack(pc)[getHomeEntrance(playerIndex, pc)];
   return Math.atan2(ey - HEX_CY, ex - HEX_CX);
 }
 
 /**
  * A player's home column, running inward from just under their entrance
  * square to the edge of the goal — so it visibly connects the two.
+ * @param {number} playerIndex @param {number} pc
  */
-function hexHomeColumn(playerIndex) {
-  const a    = hexArmAngle(playerIndex);
+function hexHomeColumn(playerIndex, pc) {
+  const a    = hexArmAngle(playerIndex, pc);
   const step = (HEX_R_COL_OUTER - HEX_R_COL_INNER) / (HOME_COLUMN_LEN - 1);
   return Array.from({ length: HOME_COLUMN_LEN }, (_, i) => {
     const r = HEX_R_COL_OUTER - i * step;
@@ -230,29 +254,37 @@ function hexHomeColumn(playerIndex) {
 }
 
 /**
- * Home base centre, offset 30° from the home column — i.e. onto the bisector
- * between this arm and the next — so bases sit in the empty wedges instead of
- * colliding with the columns.
+ * Home base centre, offset half an arm's angle from the home column — onto
+ * the bisector between this arm and the next — so bases sit in the empty
+ * wedges instead of colliding with the columns.
+ * @param {number} playerIndex @param {number} pc
  */
-function hexHomeBase(playerIndex) {
-  const a = hexArmAngle(playerIndex) + Math.PI / 6;
+function hexHomeBase(playerIndex, pc) {
+  const a = hexArmAngle(playerIndex, pc) + Math.PI / getHexArms(pc);
   return [HEX_CX + HEX_R_BASE * Math.cos(a), HEX_CY + HEX_R_BASE * Math.sin(a)];
 }
 
-const HEX_HOME_COLS  = Array.from({ length: 6 }, (_, i) => hexHomeColumn(i));
-const HEX_HOME_BASES = Array.from({ length: 6 }, (_, i) => hexHomeBase(i));
+/** @param {number} pc */
+function getHexHomeCols(pc) {
+  return Array.from({ length: getHexArms(pc) }, (_, i) => hexHomeColumn(i, pc));
+}
+
+/** @param {number} pc */
+function getHexHomeBases(pc) {
+  return Array.from({ length: getHexArms(pc) }, (_, i) => hexHomeBase(i, pc));
+}
 
 module.exports = {
   // rules
   PIECES_PER_PLAYER, HOME_COLUMN_LEN, MIN_PLAYERS, MAX_PLAYERS,
-  SQUARE_TRACK_LEN, HEX_TRACK_LEN,
-  SQUARE_START, HEX_START, SQUARE_SAFE, HEX_SAFE,
-  isSquareBoard, getTrackLen, getLoopLen, getGoalPos, getSafeSet, getStartSq,
+  SQUARE_TRACK_LEN, HEX_CELLS_PER_ARM,
+  SQUARE_START, SQUARE_SAFE,
+  isSquareBoard, getHexArms, getTrackLen, getLoopLen, getGoalPos, getSafeSet, getStartSq,
   isOnTrack, pathToTrack, getHomeEntrance, isValidPlayerCount, getValidMoves, squareArm,
   // square geometry
   SQUARE_GRID, SQUARE_CELL, SQUARE_SIZE,
   SQUARE_TRACK, SQUARE_HOME_COLS, SQUARE_HOME_QUADRANTS,
   // hex geometry
-  HEX_VIEW, HEX_CX, HEX_CY, HEX_R_TRACK, HEX_R_GOAL, HEX_CELLS_PER_EDGE,
-  HEX_TRACK, HEX_HOME_COLS, HEX_HOME_BASES, hexCorner,
+  HEX_VIEW, HEX_CX, HEX_CY, HEX_R_TRACK, HEX_R_GOAL,
+  getHexTrack, getHexHomeCols, getHexHomeBases, hexCorner,
 };

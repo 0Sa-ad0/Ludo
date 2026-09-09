@@ -5,16 +5,18 @@ import type { GameState, Piece, Player, Point } from '@/lib/types';
 import { PLAYER_COLORS } from '@/lib/constants';
 import {
   HEX_VIEW, HEX_CX, HEX_CY, HEX_R_GOAL,
-  HEX_TRACK, HEX_HOME_COLS, HEX_HOME_BASES, hexCorner,
+  getHexTrack, getHexHomeCols, getHexHomeBases, getHexArms, hexCorner,
   getLoopLen, isOnTrack, pathToTrack, isSafeSquare,
   getValidMoves, startSquares,
 } from '@/lib/board';
 import styles from './SquareBoard.module.css';
 
 /**
- * Six-player board: a hexagonal track ring, six home columns running from the
- * track in to the centre goal, and six home bases tucked into the wedges
- * between adjacent columns.
+ * Star-shaped board for 5- or 6-player games: a polygonal track ring with one
+ * arm per player, home columns running from the track in to the centre goal,
+ * and home bases tucked into the wedges between adjacent columns. The arm
+ * count follows playerCount directly — 5 players get a true pentagon, 6 get
+ * a true hexagon, never a fixed hexagon with an empty arm.
  *
  * All positions come from @/lib/board, where they are derived from the same
  * track indices the rules use — so a column always lands next to the square a
@@ -39,7 +41,10 @@ export default function HexBoard({
 }: Props) {
   const { players, playerCount, currentPlayerIndex, diceValue, diceRolled } = gameState;
   const loopLen = getLoopLen(playerCount);
-  const arms = 6;
+  const arms = getHexArms(playerCount);
+  const HEX_TRACK = useMemo(() => getHexTrack(playerCount), [playerCount]);
+  const HEX_HOME_COLS = useMemo(() => getHexHomeCols(playerCount), [playerCount]);
+  const HEX_HOME_BASES = useMemo(() => getHexHomeBases(playerCount), [playerCount]);
 
   const validMoveIds = useMemo(() => {
     if (!diceRolled || currentPlayerIndex !== myPlayerIndex) return new Set<string>();
@@ -97,10 +102,10 @@ export default function HexBoard({
       if (pt) out.push(pt);
     }
     return out;
-  }, [validMoveIds, diceValue, players, myPlayerIndex, playerCount, loopLen]);
+  }, [validMoveIds, diceValue, players, myPlayerIndex, playerCount, loopLen, HEX_TRACK, HEX_HOME_COLS]);
 
   const starts = startSquares(playerCount);
-  const hexOutline = Array.from({ length: 6 }, (_, k) => hexCorner(k).join(',')).join(' ');
+  const hexOutline = Array.from({ length: arms }, (_, k) => hexCorner(k, arms).join(',')).join(' ');
 
   return (
     <svg

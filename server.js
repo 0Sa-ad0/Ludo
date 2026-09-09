@@ -26,6 +26,11 @@ const handle = app.getRequestHandler();
 // ─── Tunables (overridable via env for fast, deterministic tests) ────────────
 const RECONNECT_GRACE_MS = Number(process.env.RECONNECT_GRACE_MS) || 30_000;
 const AUTO_MOVE_DELAY_MS = Number(process.env.AUTO_MOVE_DELAY_MS) || 1_200;
+// A roll that leaves exactly one legal move isn't a decision — the player
+// only ever taps the one highlighted piece. Playing it for them saves a
+// pointless click; this brief pause just lets the dice animation land
+// first, so the piece doesn't appear to jump before the roll registers.
+const FORCED_MOVE_DELAY_MS = Number(process.env.FORCED_MOVE_DELAY_MS) || 550;
 const TURN_TIMEOUT_MS    = Number(process.env.TURN_TIMEOUT_MS)    || 45_000;
 const SKIP_NOTICE_MS     = Number(process.env.SKIP_NOTICE_MS)     || 1_400;
 const ROOM_TTL_MS        = Number(process.env.ROOM_TTL_MS)        || 2 * 60 * 60 * 1000;
@@ -611,8 +616,38 @@ Promise.all([app.prepare(), initDb()]).then(() => {
         return armTurn(io, roomCode);
       }
 
-      if (getValidMoves(player, value, state).length > 0) {
-        // They have a decision to make — restart the idle clock for it.
+      const valid = getValidMoves(player, value, state);
+
+      if (valid.length > 1) {
+        // A real decision — restart the idle clock and wait for their tap.
+        return armTurn(io, roomCode);
+      }
+
+      if (valid.length === 1) {
+        // Only one piece can legally move — nothing to choose, so play it
+        // for them instead of making them tap the single highlighted piece.
+        clearTurnTimer(roomCode);
+        await sleep(FORCED_MOVE_DELAY_MS);
+        if (turnTokens.get(roomCode) !== token) return;
+
+        const s = gameRooms.get(roomCode);
+        if (!s || s.status !== 'playing' || s.currentPlayerIndex !== playerIndex) return;
+
+        const newState = applyMove(s, playerIndex, valid[0], value);
+        newState.leaderboardRecorded = s.leaderboardRecorded;
+        touch(newState);
+        gameRooms.set(roomCode, newState);
+        bumpTurn(roomCode);
+        await saveGameState(newState);
+
+        io.to(roomCode).emit('piece_moved', {
+          playerIndex, pieceId: valid[0],
+          capturedPieces: newState.lastMove.capturedPieces,
+          forced: true,
+        });
+        broadcastState(io, roomCode, newState);
+
+        if (newState.status === 'finished') return endGame(io, roomCode, newState);
         return armTurn(io, roomCode);
       }
 

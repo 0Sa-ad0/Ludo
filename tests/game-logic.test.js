@@ -7,7 +7,7 @@ const {
 } = require('../game-logic');
 
 const {
-  SQUARE_TRACK, SQUARE_HOME_COLS, HEX_TRACK, HEX_HOME_COLS, HEX_HOME_BASES,
+  SQUARE_TRACK, SQUARE_HOME_COLS, getHexTrack, getHexHomeCols, getHexHomeBases,
   HEX_VIEW, squareArm,
 } = require('../src/lib/rules');
 
@@ -180,17 +180,22 @@ describe('board display rotation — exhaustive collision safety', () => {
   });
 });
 
-describe('hex board geometry', () => {
-  test('the track is 60 evenly spaced cells', () => {
-    expect(HEX_TRACK).toHaveLength(60);
-    const gaps = HEX_TRACK.map((c, i) => dist(c, HEX_TRACK[(i + 1) % 60]));
+describe.each([5, 6])('hex board geometry (%i players)', (pc) => {
+  const HEX_TRACK = getHexTrack(pc);
+  const HEX_HOME_COLS = getHexHomeCols(pc);
+  const HEX_HOME_BASES = getHexHomeBases(pc);
+  const trackLen = pc * 10;
+
+  test(`the track is ${pc * 10} evenly spaced cells (${pc}-arm star)`, () => {
+    expect(HEX_TRACK).toHaveLength(trackLen);
+    const gaps = HEX_TRACK.map((c, i) => dist(c, HEX_TRACK[(i + 1) % trackLen]));
     const min = Math.min(...gaps), max = Math.max(...gaps);
     expect(max - min).toBeLessThan(0.001); // uniform all the way round
   });
 
   test('each home column starts next to its entrance and ends near the centre', () => {
-    for (let p = 0; p < 6; p++) {
-      const entrance = HEX_TRACK[getHomeEntrance(p, 6)];
+    for (let p = 0; p < pc; p++) {
+      const entrance = HEX_TRACK[getHomeEntrance(p, pc)];
       expect(dist(entrance, HEX_HOME_COLS[p][0])).toBeLessThan(40);
       const innermost = HEX_HOME_COLS[p][HEX_HOME_COLS[p].length - 1];
       expect(dist(innermost, [HEX_VIEW / 2, HEX_VIEW / 2])).toBeLessThan(100);
@@ -217,6 +222,25 @@ describe('hex board geometry', () => {
         expect(dist(base, cell)).toBeGreaterThan(46 + 14);
       }
     }
+  });
+});
+
+describe('hex board arm count follows player count', () => {
+  test('a 5-player game is a pentagon, not a hexagon with an empty arm', () => {
+    expect(getHexTrack(5)).toHaveLength(50);
+    expect(getHexHomeCols(5)).toHaveLength(5);
+    expect(getHexHomeBases(5)).toHaveLength(5);
+  });
+
+  test('a 6-player game is a hexagon', () => {
+    expect(getHexTrack(6)).toHaveLength(60);
+    expect(getHexHomeCols(6)).toHaveLength(6);
+    expect(getHexHomeBases(6)).toHaveLength(6);
+  });
+
+  test('start squares are evenly spaced by arm, for both counts', () => {
+    for (let i = 0; i < 5; i++) expect(getStartSq(i, 5)).toBe(i * 10);
+    for (let i = 0; i < 6; i++) expect(getStartSq(i, 6)).toBe(i * 10);
   });
 });
 
@@ -652,9 +676,11 @@ describe('hex board (5–6 players)', () => {
     expect(applyMove(state, 0, 'p0_piece0', 6).players[0].pieces[0].status).toBe('finished');
   });
 
-  test('a 5-player game still uses the hex board', () => {
-    expect(getTrackLen(5)).toBe(60);
-    expect(getGoalPos(5)).toBe(GOAL_6);
+  test('a 5-player game uses the hex board, as its own 5-arm pentagon', () => {
+    expect(getTrackLen(5)).toBe(50);
+    expect(getGoalPos(5)).toBe(54); // loopLen 49 + 5 home column
+    expect(getGoalPos(5)).not.toBe(GOAL_6);
+    expect(getStartSq(2, 5)).toBe(20);
   });
 });
 
