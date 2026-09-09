@@ -3,7 +3,7 @@
  * validation. Timers are shortened via env so these run in seconds.
  */
 const {
-  startServer, waitForServer, makeClientFactory,
+  startServer, stopServer, waitForServer, makeClientFactory,
   waitForEvent, waitForState, makeRoom,
 } = require('./harness');
 
@@ -23,9 +23,9 @@ beforeAll(async () => {
   ({ connect, closeAll } = makeClientFactory(PORT));
 }, 40000);
 
-afterAll(() => {
+afterAll(async () => {
   closeAll?.();
-  serverProcess?.kill();
+  await stopServer(serverProcess);
 });
 
 // ─── Input validation ───────────────────────────────────────────────────────

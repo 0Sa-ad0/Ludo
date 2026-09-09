@@ -16,9 +16,12 @@ import styles from './JoinPrompt.module.css';
 interface Props {
   roomCode: string;
   onSubmit: (playerName: string, password: string) => void;
+  /** Set when a previous attempt was rejected by the server (name taken,
+   *  wrong password, room full, …) so the player can see why and retry. */
+  errorMessage?: string;
 }
 
-export default function JoinPrompt({ roomCode, onSubmit }: Props) {
+export default function JoinPrompt({ roomCode, onSubmit, errorMessage }: Props) {
   // Most people rejoin under the name they used last time.
   const [name, setName] = useStoredPreference(STORAGE_NAME, '');
   const [password, setPassword] = useState('');
@@ -40,6 +43,10 @@ export default function JoinPrompt({ roomCode, onSubmit }: Props) {
       <p className={styles.sub}>
         Room <strong className="font-orbitron" data-testid="room-code">{roomCode}</strong>
       </p>
+
+      {errorMessage && (
+        <p className={styles.error} role="alert" data-testid="join-error">{errorMessage}</p>
+      )}
 
       <div className={styles.field}>
         <label className={styles.label} htmlFor="join-prompt-name">Your Name</label>

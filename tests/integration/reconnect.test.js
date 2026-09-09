@@ -8,7 +8,7 @@
  * what's being verified.
  */
 const {
-  startServer, waitForServer, makeClientFactory,
+  startServer, stopServer, waitForServer, makeClientFactory,
   waitForEvent, waitForState, makeRoom,
 } = require('./harness');
 
@@ -29,9 +29,9 @@ beforeAll(async () => {
   ({ connect, closeAll } = makeClientFactory(PORT));
 }, 40000);
 
-afterAll(() => {
+afterAll(async () => {
   closeAll?.();
-  serverProcess?.kill();
+  await stopServer(serverProcess);
 });
 
 // REGRESSION: disconnectTimers used to be keyed by the old socket.id and were
