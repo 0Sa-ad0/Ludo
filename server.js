@@ -841,19 +841,31 @@ Promise.all([app.prepare(), initDb()]).then(() => {
     console.log(`   Local:   http://localhost:${port}`);
     const { networkInterfaces } = require('os');
     const nets = networkInterfaces();
+    // Windows (and WSL/Docker/Hyper-V on it) auto-creates virtual adapters
+    // alongside the real WiFi/Ethernet NIC — e.g. "vEthernet (WSL)" handing
+    // out a 172.x address. Those are only reachable from this machine, so
+    // listing them as shareable LAN addresses is actively misleading.
+    const isVirtualAdapter = (name) => /vEthernet|Virtual|VMware|VirtualBox|Hyper-V|Loopback|Docker|WSL|Tailscale|ZeroTier/i.test(name);
+
+    const candidates = [];
     for (const name of Object.keys(nets)) {
       for (const net of nets[name]) {
-        if (net.family === 'IPv4' && !net.internal) {
-          const lanUrl = `http://${net.address}:${port}`;
-          console.log(`   Network: ${lanUrl}  ← Share this on WiFi`);
-          // First non-internal IPv4 wins — good enough on the single-NIC
-          // machines this actually runs on, and used as the share-link base
-          // whenever a client opened the page via localhost (where
-          // window.location.origin would otherwise produce a dead link for
-          // everyone else).
-          if (!global.__LUDO_LAN_URL) global.__LUDO_LAN_URL = lanUrl;
-        }
+        if (net.family === 'IPv4' && !net.internal) candidates.push({ name, address: net.address });
       }
+    }
+    // Prefer real adapters; only fall back to virtual ones if that's all
+    // there is, so a share link is never left with nothing to offer.
+    const real = candidates.filter((c) => !isVirtualAdapter(c.name));
+    const toShow = real.length > 0 ? real : candidates;
+
+    for (const { address } of toShow) {
+      const lanUrl = `http://${address}:${port}`;
+      console.log(`   Network: ${lanUrl}  ← Share this on WiFi`);
+      // First candidate wins — good enough on the single-NIC machines this
+      // actually runs on, and used as the share-link base whenever a client
+      // opened the page via localhost (where window.location.origin would
+      // otherwise produce a dead link for everyone else).
+      if (!global.__LUDO_LAN_URL) global.__LUDO_LAN_URL = lanUrl;
     }
     console.log('');
     detectNgrokUrl();
