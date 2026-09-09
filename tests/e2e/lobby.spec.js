@@ -24,7 +24,40 @@ test.describe('Lobby / landing page', () => {
     await page.locator('#input-room-code').fill('ZZZZZZ');
     await page.locator('#btn-join-confirm').click();
 
-    await expect(page.getByTestId('error-banner')).toBeVisible({ timeout: 5000 });
-    await expect(page.getByTestId('error-banner')).toHaveText(/room not found/i);
+    // A rejected join attempt lands back on the name/password prompt (not a
+    // dead end) so a recoverable mistake — e.g. a taken name or wrong
+    // password — can be fixed and retried without leaving the page.
+    await expect(page.getByTestId('join-error')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('join-error')).toHaveText(/room not found/i);
+  });
+
+  test('joining with a name already taken in the room shows an error and lets you retry', async ({ browser }) => {
+    const hostCtx = await browser.newContext();
+    const host = await hostCtx.newPage();
+    await host.goto('/');
+    await clickUntil(host, host.locator('#btn-create-room'), host.locator('#input-create-name'));
+    await host.locator('#input-create-name').fill('Ann');
+    await host.locator('#btn-player-count-4').click();
+    await host.locator('#btn-create-confirm').click();
+    const roomCode = (await host.getByTestId('room-code').textContent()).trim();
+
+    const guestCtx = await browser.newContext();
+    const guest = await guestCtx.newPage();
+    await guest.goto(`/game/${roomCode}`);
+    await guest.locator('#join-prompt-name').fill('Ann');
+    await guest.locator('#btn-join-prompt').click();
+
+    // REGRESSION: this used to strand the player on a dead-end error screen
+    // with no way to pick a different name and get into the room.
+    await expect(guest.getByTestId('join-error')).toBeVisible({ timeout: 5000 });
+    await expect(guest.getByTestId('join-error')).toHaveText(/already taken/i);
+    await expect(guest.locator('#join-prompt-name')).toBeVisible();
+
+    await guest.locator('#join-prompt-name').fill('Bob');
+    await guest.locator('#btn-join-prompt').click();
+    await expect(guest.getByTestId('room-code')).toHaveText(roomCode, { timeout: 5000 });
+
+    await hostCtx.close();
+    await guestCtx.close();
   });
 });

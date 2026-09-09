@@ -56,6 +56,10 @@ export default function GamePage({ params }: GamePageProps) {
   // Opening a shared /game/CODE link has no stored name, so ask for one
   // instead of silently joining the room as "undefined".
   const [needsName, setNeedsName]     = useState(false);
+  // Set when the server rejected our own join/create attempt (name taken,
+  // wrong password, room full…) so we can send the player back to the name
+  // prompt to fix it and retry, instead of stranding them on a dead end.
+  const [joinError, setJoinError]     = useState('');
 
   const { play, muted, toggleMute } = useSound();
   // Socket handlers are registered once, so they read the moving parts through
@@ -228,6 +232,16 @@ export default function GamePage({ params }: GamePageProps) {
     socket.on('kicked', () => { setKicked(true); socket.disconnect(); });
 
     socket.on('error', (msg: string) => {
+      // Never successfully joined yet (myIndexRef is only set by 'joined' /
+      // 'room_created') — this is a rejection of the join itself, so send
+      // the player back to the name prompt to fix it and try again, rather
+      // than stranding them on a dead-end error screen with no way back in.
+      if (!isCreate && myIndexRef.current === -1) {
+        setJoinError(msg);
+        setNeedsName(true);
+        setJoinInfo(null);
+        return;
+      }
       setError(msg);
       setRolling(false);
       setTimeout(() => setError((e) => (e === msg ? '' : e)), 4000);
@@ -307,6 +321,7 @@ export default function GamePage({ params }: GamePageProps) {
       sessionStorage.setItem(STORAGE_ROOM(roomId), JSON.stringify(info));
       localStorage.setItem(STORAGE_NAME, playerName);
     } catch { /* ignore */ }
+    setJoinError('');
     setNeedsName(false);
     setConnecting(true);
     setJoinInfo(info);
@@ -328,7 +343,7 @@ export default function GamePage({ params }: GamePageProps) {
   if (needsName) {
     return (
       <Shell socket={socket}>
-        <JoinPrompt roomCode={roomId} onSubmit={handleNameSubmit} />
+        <JoinPrompt roomCode={roomId} onSubmit={handleNameSubmit} errorMessage={joinError} />
       </Shell>
     );
   }

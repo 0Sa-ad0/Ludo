@@ -100,8 +100,10 @@ test.describe('Two-player game flow', () => {
     await guest.locator('#input-join-password').fill('wrong-password');
     await guest.locator('#btn-join-confirm').click();
 
-    await expect(guest.getByTestId('error-banner')).toBeVisible({ timeout: 5000 });
-    await expect(guest.getByTestId('error-banner')).toHaveText(/wrong password/i);
+    // Lands back on the join prompt (not a dead end) so a mistyped password
+    // can be corrected without leaving the page.
+    await expect(guest.getByTestId('join-error')).toBeVisible({ timeout: 5000 });
+    await expect(guest.getByTestId('join-error')).toHaveText(/wrong password/i);
 
     await hostCtx.close();
     await guestCtx.close();

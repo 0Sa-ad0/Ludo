@@ -30,6 +30,30 @@ function startServer(port, env = {}) {
   return child;
 }
 
+/**
+ * Kill a server started with startServer and wait for the process to
+ * actually exit before resolving.
+ *
+ * Next's dev mode guards against two dev servers running in the same
+ * project directory with a lock file under .next/dev — a guard that is
+ * scoped to the directory, not the port, so it applies just as much between
+ * two of *these* short-lived test servers as it would between two real dev
+ * servers. kill() only sends the signal; it does not wait for the process to
+ * actually exit and release that lock. Without waiting here, Jest's afterAll
+ * returns immediately and the next suite's beforeAll can spawn its own
+ * server.js while this one is still shutting down — that second process then
+ * finds the lock still held, refuses to start, and every socket probe in
+ * that suite times out. See waitForServer's caller for the failure mode.
+ */
+function stopServer(child, timeoutMs = 5000) {
+  if (!child || child.exitCode !== null || child.signalCode) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(); }, timeoutMs);
+    child.once('exit', () => { clearTimeout(timer); resolve(); });
+    child.kill();
+  });
+}
+
 /** Resolve once the socket server is actually accepting connections. */
 function waitForServer(port, timeoutMs = 30000) {
   const url = `http://localhost:${port}`;
@@ -113,6 +137,6 @@ async function makeRoom(connect, { playerCount = 2, names = ['Host', 'Guest'], p
 }
 
 module.exports = {
-  OPTS, startServer, waitForServer, makeClientFactory,
+  OPTS, startServer, stopServer, waitForServer, makeClientFactory,
   waitForEvent, waitForState, makeRoom,
 };

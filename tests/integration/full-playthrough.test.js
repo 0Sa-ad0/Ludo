@@ -13,7 +13,7 @@
  *     no window where the still-live roll can be sneaked in as a move
  */
 const {
-  startServer, waitForServer, makeClientFactory, makeRoom,
+  startServer, stopServer, waitForServer, makeClientFactory, makeRoom,
 } = require('./harness');
 const { getValidMoves } = require('../../game-logic');
 
@@ -33,9 +33,9 @@ beforeAll(async () => {
   ({ connect, closeAll } = makeClientFactory(PORT));
 }, 40000);
 
-afterAll(() => {
+afterAll(async () => {
   closeAll?.();
-  serverProcess?.kill();
+  await stopServer(serverProcess);
 });
 
 test('a full 2-player game, driven turn by turn, obeys every bonus-roll and forfeit rule live', async () => {
