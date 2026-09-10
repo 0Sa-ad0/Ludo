@@ -42,30 +42,30 @@ async function safeClose(ctx) {
 // browser UI adds several seconds of unrelated, high-variance latency (dev
 // compile, React Strict Mode's dev-only double-connect, click retries) that
 // have nothing to do with what's being verified. These tests instead cover
-// what the browser layer actually owns: rendering the right badge at the
-// right time.
+// what the browser layer actually owns: surfacing the right toast at the
+// right time (the persistent per-player side-panel badge these used to
+// check was removed — it duplicated the player's name, which now renders
+// once, directly on the board).
 test.describe('Disconnect / reconnect / AUTO mode (UI)', () => {
-  test('disconnected player shows a reconnecting badge, then flips to AUTO after the grace period', async ({ browser }) => {
+  test('a disconnected player triggers a toast, then an AUTO toast after the grace period', async ({ browser }) => {
     const { hostCtx, host, guestCtx } = await createTwoPlayerGame(browser);
 
     // Guest disconnects (closing the context tears down the socket).
     await guestCtx.close();
 
-    // Host should see the reconnecting badge for Guest (slot 1) right away.
-    await expect(host.getByTestId('reconnecting-1')).toBeVisible({ timeout: 3000 });
+    await expect(host.getByTestId('capture-banner')).toHaveText(/lost connection/i, { timeout: 3000 });
 
-    // After the grace period, it flips to the AUTO badge instead.
-    await expect(host.getByTestId('auto-1')).toBeVisible({ timeout: GRACE_MS + 3000 });
-    await expect(host.getByTestId('reconnecting-1')).not.toBeVisible();
+    // After the grace period, an AUTO toast follows.
+    await expect(host.getByTestId('capture-banner')).toHaveText(/on auto/i, { timeout: GRACE_MS + 3000 });
 
     await safeClose(hostCtx);
   });
 
-  test('the reconnecting badge clears once the player rejoins', async ({ browser }) => {
+  test('a reconnected player triggers a welcome-back toast', async ({ browser }) => {
     const { hostCtx, host, guestCtx, roomCode } = await createTwoPlayerGame(browser);
 
     await guestCtx.close();
-    await expect(host.getByTestId('reconnecting-1')).toBeVisible({ timeout: 3000 });
+    await expect(host.getByTestId('capture-banner')).toHaveText(/lost connection/i, { timeout: 3000 });
 
     const newGuestCtx = await browser.newContext();
     const newGuest = await newGuestCtx.newPage();
@@ -76,7 +76,7 @@ test.describe('Disconnect / reconnect / AUTO mode (UI)', () => {
     await newGuest.locator('#btn-join-confirm').click();
 
     await expect(newGuest.getByTestId('turn-text')).toBeVisible({ timeout: 10_000 });
-    await expect(host.getByTestId('reconnecting-1')).not.toBeVisible({ timeout: 5000 });
+    await expect(host.getByTestId('capture-banner')).toHaveText(/is back/i, { timeout: 5000 });
 
     await safeClose(hostCtx);
     await safeClose(newGuestCtx);

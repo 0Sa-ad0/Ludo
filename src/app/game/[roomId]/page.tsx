@@ -19,7 +19,6 @@ import PingIndicator from '@/components/PingIndicator/PingIndicator';
 import SquareBoard from '@/components/Board/SquareBoard';
 import HexBoard from '@/components/Board/HexBoard';
 import DiceRoller from '@/components/Dice/DiceRoller';
-import PlayerPanel from '@/components/PlayerPanel/PlayerPanel';
 import WinScreen from '@/components/WinScreen/WinScreen';
 import WaitingRoom from '@/components/WaitingRoom/WaitingRoom';
 import JoinPrompt from '@/components/JoinPrompt/JoinPrompt';
@@ -346,18 +345,6 @@ export default function GamePage({ params }: GamePageProps) {
   const current   = gameState?.players[gameState.currentPlayerIndex];
   const turnColor = current ? PLAYER_COLORS[current.colorIndex]?.hex : '#888';
 
-  // With 5–6 players an every-other-one split leaves three names crushed into
-  // an 80px column, so hex games get a single horizontal strip instead.
-  const splitPanels = !isHex;
-  const leftPanel  = useMemo(
-    () => (gameState ? gameState.players.filter((_, i) => !splitPanels || i % 2 === 0) : []),
-    [gameState, splitPanels],
-  );
-  const rightPanel = useMemo(
-    () => (gameState && splitPanels ? gameState.players.filter((_, i) => i % 2 === 1) : []),
-    [gameState, splitPanels],
-  );
-
   // ── Actions ─────────────────────────────────────────────────────────────
   const handleRoll = useCallback(() => {
     const socket = socketRef.current;
@@ -508,15 +495,7 @@ export default function GamePage({ params }: GamePageProps) {
         </div>
       </div>
 
-      <div className={`${styles.gameArea} ${isHex ? styles.gameAreaWide : ''}`}>
-        <div className={styles.sidePanel}>
-          {leftPanel.map((p) => (
-            <PlayerPanel key={p.id} player={p}
-              isMyTurn={gameState.currentPlayerIndex === p.slotIndex}
-              isMe={p.slotIndex === myPlayerIndex} />
-          ))}
-        </div>
-
+      <div className={styles.gameArea}>
         <div className={styles.boardContainer}>
           {isHex ? (
             <HexBoard gameState={gameState} myPlayerIndex={myPlayerIndex}
@@ -528,16 +507,6 @@ export default function GamePage({ params }: GamePageProps) {
               diceSettled={!rollingDice} highlightSlot={gameState.currentPlayerIndex} />
           )}
         </div>
-
-        {splitPanels && (
-          <div className={styles.sidePanel}>
-            {rightPanel.map((p) => (
-              <PlayerPanel key={p.id} player={p}
-                isMyTurn={gameState.currentPlayerIndex === p.slotIndex}
-                isMe={p.slotIndex === myPlayerIndex} />
-            ))}
-          </div>
-        )}
       </div>
 
       <div className={styles.diceArea}>

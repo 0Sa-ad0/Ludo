@@ -46,9 +46,11 @@ test.describe('Shared room link', () => {
     await expect(guest.getByTestId('turn-text')).toBeVisible({ timeout: 10_000 });
     await expect(host.getByTestId('turn-text')).toBeVisible({ timeout: 10_000 });
 
-    // The name that actually reached the server is the one that was typed.
-    await expect(host.locator('#player-panel-1')).toContainText('LinkGuest');
-    await expect(host.locator('#player-panel-1')).not.toContainText('undefined');
+    // The name that actually reached the server is the one that was typed —
+    // rendered directly on the board next to the guest's own home base.
+    const board = host.getByRole('img', { name: /Ludo board/i });
+    await expect(board).toContainText('LinkGuest');
+    await expect(board).not.toContainText('undefined');
 
     await hostCtx.close();
     await guestCtx.close();
