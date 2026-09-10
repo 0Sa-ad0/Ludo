@@ -21,9 +21,6 @@ let connect, closeAll;
 beforeAll(async () => {
   serverProcess = startServer(PORT, {
     RECONNECT_GRACE_MS: String(GRACE_MS),
-    // Long enough that the idle-turn watchdog never fires during these tests
-    // and muddies what they're actually measuring.
-    TURN_TIMEOUT_MS: '60000',
   });
   await waitForServer(PORT);
   ({ connect, closeAll } = makeClientFactory(PORT));

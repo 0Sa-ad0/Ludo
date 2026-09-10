@@ -7,7 +7,7 @@
  * only place that needs to know rules.js is JavaScript.
  */
 import * as rules from './rules';
-import type { Point, Piece } from './types';
+import type { Point, Piece, Player } from './types';
 
 export const {
   PIECES_PER_PLAYER,
@@ -39,6 +39,12 @@ export const getHomeEntrance = rules.getHomeEntrance as (slot: number, pc: numbe
 export const squareArm       = rules.squareArm as (slot: number, pc: number) => number;
 export const isOnTrack       = rules.isOnTrack as (pathPos: number, pc: number) => boolean;
 export const pathToTrack     = rules.pathToTrack as (pathPos: number, slot: number, pc: number) => number;
+/** The pathPositions a piece marker should visibly step through, from...to (see rules.js). */
+export const getWalkSteps    = rules.getWalkSteps as (fromPath: number, toPath: number) => number[];
+/** Would landing on this absolute track square capture an opponent? Preview-only, mirrors the server's real rule. */
+export const wouldCaptureAt  = rules.wouldCaptureAt as (
+  trackIndex: number, playerIndex: number, players: Player[], pc: number,
+) => boolean;
 export const hexCorner       = rules.hexCorner as (k: number, arms: number) => Point;
 /** A hex board's track cells, walked clockwise; length varies with player count (5-arm vs 6-arm). */
 export const getHexTrack     = rules.getHexTrack as (pc: number) => Point[];

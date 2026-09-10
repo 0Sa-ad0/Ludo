@@ -1,14 +1,15 @@
 'use client';
 
 import { useMemo } from 'react';
-import type { GameState, Piece, Player, Point } from '@/lib/types';
+import type { GameState, Piece, Player, Point, WalkJob } from '@/lib/types';
 import { PLAYER_COLORS } from '@/lib/constants';
 import {
   HEX_VIEW, HEX_CX, HEX_CY, HEX_R_GOAL,
   getHexTrack, getHexHomeCols, getHexHomeBases, getHexArms, hexCorner,
   getLoopLen, isOnTrack, pathToTrack, isSafeSquare,
-  getValidMoves, startSquares,
+  getValidMoves, startSquares, wouldCaptureAt,
 } from '@/lib/board';
+import { useWalkAnimation } from '@/lib/useWalkAnimation';
 import styles from './SquareBoard.module.css';
 
 /**
@@ -31,13 +32,15 @@ const BASE_R  = 46;
 interface Props {
   gameState: GameState;
   myPlayerIndex: number;
-  movingPiece: string | null;
-  capturingPiece?: string | null;
+  diceSettled: boolean;
+  highlightSlot: number;
+  walkBatch: { id: number; jobs: WalkJob[] } | null;
+  capturingPieces: Set<string>;
   onPieceClick: (pieceId: string) => void;
 }
 
 export default function HexBoard({
-  gameState, myPlayerIndex, movingPiece, capturingPiece, onPieceClick,
+  gameState, myPlayerIndex, diceSettled, highlightSlot, walkBatch, capturingPieces, onPieceClick,
 }: Props) {
   const { players, playerCount, currentPlayerIndex, diceValue, diceRolled } = gameState;
   const loopLen = getLoopLen(playerCount);
@@ -47,11 +50,11 @@ export default function HexBoard({
   const HEX_HOME_BASES = useMemo(() => getHexHomeBases(playerCount), [playerCount]);
 
   const validMoveIds = useMemo(() => {
-    if (!diceRolled || currentPlayerIndex !== myPlayerIndex) return new Set<string>();
+    if (!diceRolled || !diceSettled || currentPlayerIndex !== myPlayerIndex) return new Set<string>();
     const me = players[myPlayerIndex];
     if (!me || me.isFinished) return new Set<string>();
     return new Set(getValidMoves(me, diceValue, gameState));
-  }, [diceRolled, currentPlayerIndex, myPlayerIndex, players, diceValue, gameState]);
+  }, [diceRolled, diceSettled, currentPlayerIndex, myPlayerIndex, players, diceValue, gameState]);
 
   function pointFor(piece: Piece, slot: number): Point | null {
     if (piece.status === 'home' || piece.status === 'finished') return null;
@@ -59,6 +62,16 @@ export default function HexBoard({
       return HEX_TRACK[pathToTrack(piece.pathPosition, slot, playerCount)] ?? null;
     }
     return HEX_HOME_COLS[slot]?.[piece.pathPosition - loopLen] ?? null;
+  }
+
+  /** Same lookup as pointFor, but from a bare pathPosition — what the
+   *  box-by-box walk animation steps through. */
+  function coordForPath(playerIndex: number, pathPos: number): Point | null {
+    if (pathPos < 0) return null;
+    if (isOnTrack(pathPos, playerCount)) {
+      return HEX_TRACK[pathToTrack(pathPos, playerIndex, playerCount)] ?? null;
+    }
+    return HEX_HOME_COLS[playerIndex]?.[pathPos - loopLen] ?? null;
   }
 
   /** Finished pieces ring the centre in their owner's direction. */
@@ -73,10 +86,24 @@ export default function HexBoard({
     ];
   }
 
+  function homeBaseSpots(slot: number): Point[] {
+    const [bx, by] = HEX_HOME_BASES[slot];
+    return [
+      [bx - 16, by - 16], [bx + 16, by - 16],
+      [bx - 16, by + 16], [bx + 16, by + 16],
+    ];
+  }
+
+  const walking = useWalkAnimation(walkBatch, {
+    resolveXY: coordForPath,
+    homeBaseXY: (playerIndex, pieceIndex) => homeBaseSpots(playerIndex)[pieceIndex],
+  });
+
   const stacks = useMemo(() => {
     const map = new Map<string, { piece: Piece; player: Player }[]>();
     for (const player of players) {
       for (const piece of player.pieces) {
+        if (walking.has(piece.id)) continue;
         const pt = pointFor(piece, player.slotIndex);
         if (!pt) continue;
         const key = `${Math.round(pt[0])}_${Math.round(pt[1])}`;
@@ -86,20 +113,23 @@ export default function HexBoard({
     }
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [players, playerCount]);
+  }, [players, playerCount, walking]);
 
   const previewPoints = useMemo(() => {
-    if (!validMoveIds.size || !diceValue) return [] as Point[];
+    if (!validMoveIds.size || !diceValue) return [] as { pt: Point; capture: boolean }[];
     const me = players[myPlayerIndex];
-    if (!me) return [] as Point[];
-    const out: Point[] = [];
+    if (!me) return [] as { pt: Point; capture: boolean }[];
+    const out: { pt: Point; capture: boolean }[] = [];
     for (const piece of me.pieces) {
       if (!validMoveIds.has(piece.id)) continue;
       const nextPath = piece.status === 'home' ? 0 : piece.pathPosition + diceValue;
-      const pt = isOnTrack(nextPath, playerCount)
+      const onTrack = isOnTrack(nextPath, playerCount);
+      const pt = onTrack
         ? HEX_TRACK[pathToTrack(nextPath, me.slotIndex, playerCount)]
         : HEX_HOME_COLS[me.slotIndex]?.[nextPath - loopLen];
-      if (pt) out.push(pt);
+      if (!pt) continue;
+      const capture = onTrack && wouldCaptureAt(pathToTrack(nextPath, me.slotIndex, playerCount), me.slotIndex, players, playerCount);
+      out.push({ pt, capture });
     }
     return out;
   }, [validMoveIds, diceValue, players, myPlayerIndex, playerCount, loopLen, HEX_TRACK, HEX_HOME_COLS]);
@@ -196,16 +226,19 @@ export default function HexBoard({
       })}
 
       {/* ── Move preview ───────────────────────────────────────────────── */}
-      {previewPoints.map(([x, y], i) => (
+      {previewPoints.map(({ pt: [x, y], capture }, i) => (
         <circle key={`prev-${i}`} cx={x} cy={y} r={TRACK_R + 4}
-          fill="none" stroke="rgba(255,255,255,0.55)" strokeWidth={1.5}
-          strokeDasharray="3 3" className={styles.preview} />
+          fill="none"
+          stroke={capture ? '#ff2d4a' : 'rgba(255,255,255,0.55)'}
+          strokeWidth={capture ? 2.2 : 1.5}
+          strokeDasharray="3 3" className={capture ? styles.previewCapture : styles.preview} />
       ))}
 
       {/* ── Home bases ─────────────────────────────────────────────────── */}
       {Array.from({ length: arms }, (_, slot) => {
         const player = players[slot];
         const [bx, by] = HEX_HOME_BASES[slot];
+        const isTurn = !!player && player.slotIndex === highlightSlot;
         if (!player) {
           return (
             <g key={`base-${slot}`} opacity={0.28}>
@@ -219,18 +252,17 @@ export default function HexBoard({
           );
         }
         const color = PLAYER_COLORS[player.colorIndex];
-        const spots: Point[] = [
-          [bx - 16, by - 16], [bx + 16, by - 16],
-          [bx - 16, by + 16], [bx + 16, by + 16],
-        ];
+        const spots = homeBaseSpots(slot);
         return (
           <g key={`base-${slot}`}>
             <circle cx={bx} cy={by} r={BASE_R} fill={color.home}
-              stroke={color.hex} strokeWidth={1.5} />
+              stroke={color.hex} strokeWidth={isTurn ? 3 : 1.5}
+              className={isTurn ? styles.turnGlow : undefined}
+              style={isTurn ? { filter: `drop-shadow(0 0 10px ${color.hex})` } : undefined} />
             <circle cx={bx} cy={by} r={BASE_R - 9} fill={`${color.hex}14`}
               stroke={`${color.hex}55`} strokeWidth={1} />
             {player.pieces.map((piece, i) => {
-              if (piece.status !== 'home') return null;
+              if (piece.status !== 'home' || walking.has(piece.id)) return null;
               const [x, y] = spots[i];
               return (
                 <PieceMarker
@@ -238,8 +270,7 @@ export default function HexBoard({
                   piece={piece} color={color.hex}
                   x={x} y={y} r={12}
                   isValid={validMoveIds.has(piece.id)}
-                  isMoving={piece.id === movingPiece}
-                  isCapturing={piece.id === capturingPiece}
+                  isCapturing={capturingPieces.has(piece.id)}
                   label={`${player.name} piece ${i + 1}, in home base`}
                   onActivate={onPieceClick}
                 />
@@ -263,8 +294,7 @@ export default function HexBoard({
               x={px + offset} y={py}
               r={many ? 10 : 13}
               isValid={validMoveIds.has(piece.id)}
-              isMoving={piece.id === movingPiece}
-              isCapturing={piece.id === capturingPiece}
+              isCapturing={capturingPieces.has(piece.id)}
               isBlock={many && items.every((it) => it.player.slotIndex === player.slotIndex)}
               label={`${player.name} piece ${piece.pieceIndex + 1}`}
               onActivate={onPieceClick}
@@ -273,10 +303,30 @@ export default function HexBoard({
         })
       )}
 
+      {/* ── Pieces mid-walk (box-by-box, forward or back to home) ───────── */}
+      {Array.from(walking.entries()).map(([pieceId, { xy, stepMs }]) => {
+        const player = players.find((p) => p.pieces.some((pc) => pc.id === pieceId));
+        const piece = player?.pieces.find((pc) => pc.id === pieceId);
+        if (!player || !piece) return null;
+        const color = PLAYER_COLORS[player.colorIndex];
+        return (
+          <PieceMarker
+            key={`walk-${pieceId}`}
+            piece={piece} color={color.hex}
+            x={xy[0]} y={xy[1]} r={13}
+            isValid={false}
+            isCapturing={capturingPieces.has(pieceId)}
+            transitionMs={stepMs}
+            label={`${player.name} piece ${piece.pieceIndex + 1}`}
+            onActivate={onPieceClick}
+          />
+        );
+      })}
+
       {/* ── Finished pieces ────────────────────────────────────────────── */}
       {players.flatMap((player) =>
         player.pieces
-          .filter((p) => p.status === 'finished')
+          .filter((p) => p.status === 'finished' && !walking.has(p.id))
           .map((piece) => {
             const [x, y] = goalXY(player.slotIndex, piece.pieceIndex);
             const color = PLAYER_COLORS[player.colorIndex];
@@ -316,16 +366,17 @@ interface MarkerProps {
   color: string;
   x: number; y: number; r: number;
   isValid: boolean;
-  isMoving: boolean;
   isCapturing?: boolean;
   isBlock?: boolean;
+  transitionMs?: number;
   label: string;
   onActivate: (pieceId: string) => void;
 }
 
 function PieceMarker({
-  piece, color, x, y, r, isValid, isMoving, isCapturing, isBlock, label, onActivate,
+  piece, color, x, y, r, isValid, isCapturing, isBlock, transitionMs, label, onActivate,
 }: MarkerProps) {
+  const posStyle = transitionMs != null ? { transitionDuration: `${transitionMs}ms` } : undefined;
   return (
     <g
       data-testid={`piece-${piece.id}`}
@@ -339,7 +390,7 @@ function PieceMarker({
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onActivate(piece.id); }
       }}
       style={{ cursor: isValid ? 'pointer' : 'default', outline: 'none' }}
-      className={`${isMoving ? styles.movingPiece : ''} ${isCapturing ? styles.captureFlash : ''}`}
+      className={isCapturing ? styles.captureFlash : undefined}
     >
       {isValid && (
         <circle cx={x} cy={y} r={r + 6} fill="rgba(255,255,255,0.1)"
@@ -347,14 +398,14 @@ function PieceMarker({
       )}
       <circle cx={x} cy={y} r={r} fill={color} stroke="#fff" strokeWidth={2}
         className={styles.pieceCircle}
-        style={{ filter: `drop-shadow(0 0 ${isValid ? 9 : 4}px ${color})` }} />
+        style={{ ...posStyle, filter: `drop-shadow(0 0 ${isValid ? 9 : 4}px ${color})` }} />
       {isBlock && (
         <circle cx={x} cy={y} r={r - 4} fill="none" stroke="#fff" strokeWidth={1.2} opacity={0.8} />
       )}
       <text x={x} y={y} textAnchor="middle" dominantBaseline="central"
         fontSize={r > 11 ? 10 : 9} fill="#0d0d1a" fontWeight="bold"
         className={styles.pieceCircle}
-        style={{ userSelect: 'none', pointerEvents: 'none' }}>
+        style={{ ...posStyle, userSelect: 'none', pointerEvents: 'none' }}>
         {piece.pieceIndex + 1}
       </text>
     </g>

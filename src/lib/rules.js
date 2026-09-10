@@ -116,6 +116,53 @@ function isValidPlayerCount(pc) {
   return Number.isInteger(pc) && pc >= MIN_PLAYERS && pc <= MAX_PLAYERS;
 }
 
+/**
+ * The player-relative pathPositions a piece visibly passes through moving
+ * from `fromPath` to `toPath`, exclusive of the start and inclusive of the
+ * end — what the board walks a piece marker through, square by square,
+ * instead of gliding it in a straight line.
+ *
+ *   - Released from home (`fromPath` -1): nothing to walk through, it just
+ *     appears at its start square.
+ *   - A normal move (`toPath` > `fromPath`): steps forward one square at a
+ *     time toward — and possibly past, into the home column — the goal.
+ *   - Captured and sent home (`toPath` -1): walks BACKWARD toward its own
+ *     start square (path 0); the board appends the final hop into the home
+ *     base itself, since that isn't a track/column square.
+ *
+ * @param {number} fromPath @param {number} toPath
+ */
+function getWalkSteps(fromPath, toPath) {
+  if (fromPath < 0 || fromPath === toPath) return [];
+  const steps = [];
+  if (toPath > fromPath) {
+    for (let p = fromPath + 1; p <= toPath; p++) steps.push(p);
+  } else {
+    for (let p = fromPath - 1; p >= 0; p--) steps.push(p);
+  }
+  return steps;
+}
+
+/**
+ * Would landing on `trackIndex` capture an opponent? Mirrors the exact
+ * capture rule in game-logic.js's applyMove (safe squares block captures; a
+ * block of 2+ same-colour pieces cannot be captured) so the client can
+ * preview a move as a capture before it's actually played, without ever
+ * disagreeing with what the server will really do.
+ * @param {number} trackIndex @param {number} playerIndex
+ * @param {Array<{slotIndex:number,pieces:Array<{status:string,trackPosition:number}>}>} players
+ * @param {number} pc
+ */
+function wouldCaptureAt(trackIndex, playerIndex, players, pc) {
+  if (getSafeSet(pc).has(trackIndex)) return false;
+  for (const opp of players) {
+    if (opp.slotIndex === playerIndex) continue;
+    const stacked = opp.pieces.filter((p) => p.status === 'active' && p.trackPosition === trackIndex);
+    if (stacked.length === 1) return true;
+  }
+  return false;
+}
+
 // ─── Move legality ───────────────────────────────────────────────────────────
 
 /**
@@ -281,6 +328,7 @@ module.exports = {
   SQUARE_START, SQUARE_SAFE,
   isSquareBoard, getHexArms, getTrackLen, getLoopLen, getGoalPos, getSafeSet, getStartSq,
   isOnTrack, pathToTrack, getHomeEntrance, isValidPlayerCount, getValidMoves, squareArm,
+  getWalkSteps, wouldCaptureAt,
   // square geometry
   SQUARE_GRID, SQUARE_CELL, SQUARE_SIZE,
   SQUARE_TRACK, SQUARE_HOME_COLS, SQUARE_HOME_QUADRANTS,

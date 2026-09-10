@@ -20,10 +20,12 @@ interface Props {
   waitingForMove?: boolean;
   onRoll: () => void;
   currentPlayerColor: string;
+  /** Set while the server is about to play a forced single-legal-move for someone. */
+  forcedMove?: { playerName: string; deadline: number } | null;
 }
 
 export default function DiceRoller({
-  value, rolling, canRoll, waitingForMove, onRoll, currentPlayerColor,
+  value, rolling, canRoll, waitingForMove, onRoll, currentPlayerColor, forcedMove,
 }: Props) {
   // Cycle the face while tumbling so the dice reads as *rolling* rather than
   // just spinning on its final value.
@@ -35,8 +37,32 @@ export default function DiceRoller({
     return () => clearInterval(id);
   }, [rolling]);
 
+  // Idle (nobody has rolled yet this turn) used to render a literal face-1 —
+  // indistinguishable from an actual roll of 1. An emoji placeholder can't be
+  // mistaken for a result.
+  const idle  = !rolling && value === null;
   const shown = rolling ? face : (value ?? 1);
   const dots  = DOTS[shown] ?? DOTS[1];
+
+  // Countdown ring for a pending forced move — ticks down visually rather
+  // than jumping straight from full to empty, so everyone in the room can
+  // see it coming.
+  const [remainingFrac, setRemainingFrac] = useState(1);
+  useEffect(() => {
+    if (!forcedMove) return undefined;
+    const total = Math.max(1, forcedMove.deadline - Date.now());
+    let raf: number;
+    const tick = () => {
+      const left = Math.max(0, forcedMove.deadline - Date.now());
+      setRemainingFrac(left / total);
+      if (left > 0) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [forcedMove]);
+
+  const RING_R = 46;
+  const RING_C = 2 * Math.PI * RING_R;
 
   return (
     <div className={styles.wrapper}>
@@ -58,15 +84,32 @@ export default function DiceRoller({
             fill="var(--bg-card2)" stroke={currentPlayerColor} strokeWidth={3}
             style={{ filter: `drop-shadow(0 0 8px ${currentPlayerColor})` }}
           />
-          {dots.map(([cx, cy], i) => (
-            <circle key={i} cx={cx} cy={cy} r={8} fill={currentPlayerColor}
-              style={{ filter: `drop-shadow(0 0 4px ${currentPlayerColor})` }} />
-          ))}
+          {idle ? (
+            <text x={50} y={54} textAnchor="middle" dominantBaseline="central" fontSize={44}>🎲</text>
+          ) : (
+            dots.map(([cx, cy], i) => (
+              <circle key={i} cx={cx} cy={cy} r={8} fill={currentPlayerColor}
+                style={{ filter: `drop-shadow(0 0 4px ${currentPlayerColor})` }} />
+            ))
+          )}
+          {forcedMove && (
+            <circle
+              cx={50} cy={50} r={RING_R} fill="none"
+              stroke={currentPlayerColor} strokeWidth={4} strokeLinecap="round"
+              strokeDasharray={RING_C} strokeDashoffset={RING_C * (1 - remainingFrac)}
+              transform="rotate(-90 50 50)"
+              style={{ filter: `drop-shadow(0 0 6px ${currentPlayerColor})` }}
+            />
+          )}
         </svg>
       </button>
 
       <div className={styles.hint}>
-        {rolling ? (
+        {forcedMove ? (
+          <span className={styles.tapHint} style={{ color: currentPlayerColor }}>
+            {forcedMove.playerName} — only move, auto-playing…
+          </span>
+        ) : rolling ? (
           <span className={styles.waiting}>Rolling…</span>
         ) : canRoll ? (
           <span className={styles.tapHint} style={{ color: currentPlayerColor }}>TAP TO ROLL</span>

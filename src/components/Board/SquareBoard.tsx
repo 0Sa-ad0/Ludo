@@ -1,14 +1,15 @@
 'use client';
 
 import { useMemo } from 'react';
-import type { GameState, Piece, Player, Point } from '@/lib/types';
+import type { GameState, Piece, Player, Point, WalkJob } from '@/lib/types';
 import { PLAYER_COLORS } from '@/lib/constants';
 import {
   SQUARE_CELL as CELL, SQUARE_SIZE as SIZE,
   SQUARE_TRACK, SQUARE_HOME_COLS, SQUARE_HOME_QUADRANTS,
   getLoopLen, isOnTrack, pathToTrack, isSafeSquare,
-  getValidMoves, squareArm,
+  getValidMoves, squareArm, wouldCaptureAt,
 } from '@/lib/board';
+import { useWalkAnimation } from '@/lib/useWalkAnimation';
 import styles from './SquareBoard.module.css';
 
 /**
@@ -31,13 +32,18 @@ const cellXY = ([r, c]: Point): Point => [c * CELL + CELL / 2, r * CELL + CELL /
 interface Props {
   gameState: GameState;
   myPlayerIndex: number;
-  movingPiece: string | null;
-  capturingPiece?: string | null;
+  /** True once the dice's own roll animation has actually landed — gates the
+   *  move preview so it never appears before the number does. */
+  diceSettled: boolean;
+  /** Real slotIndex of whoever's turn it is, so their home base can glow. */
+  highlightSlot: number;
+  walkBatch: { id: number; jobs: WalkJob[] } | null;
+  capturingPieces: Set<string>;
   onPieceClick: (pieceId: string) => void;
 }
 
 export default function SquareBoard({
-  gameState, myPlayerIndex, movingPiece, capturingPiece, onPieceClick,
+  gameState, myPlayerIndex, diceSettled, highlightSlot, walkBatch, capturingPieces, onPieceClick,
 }: Props) {
   const { players, playerCount, currentPlayerIndex, diceValue, diceRolled } = gameState;
   const loopLen = getLoopLen(playerCount);
@@ -72,13 +78,15 @@ export default function SquareBoard({
   }, [playerCount, myPlayerIndex]);
 
   // The server is the authority; this only decides what to highlight, so it
-  // calls the very same rule function rather than re-deriving it.
+  // calls the very same rule function rather than re-deriving it. Gated on
+  // diceSettled too — otherwise the preview could flash up before the dice
+  // has visibly finished landing on its number.
   const validMoveIds = useMemo(() => {
-    if (!diceRolled || currentPlayerIndex !== myPlayerIndex) return new Set<string>();
+    if (!diceRolled || !diceSettled || currentPlayerIndex !== myPlayerIndex) return new Set<string>();
     const me = players[myPlayerIndex];
     if (!me || me.isFinished) return new Set<string>();
     return new Set(getValidMoves(me, diceValue, gameState));
-  }, [diceRolled, currentPlayerIndex, myPlayerIndex, players, diceValue, gameState]);
+  }, [diceRolled, diceSettled, currentPlayerIndex, myPlayerIndex, players, diceValue, gameState]);
 
   /** Where a piece sits right now (in display space), or null while it is
    *  still in the home base. `slot` is the player's REAL slotIndex — this
@@ -93,6 +101,33 @@ export default function SquareBoard({
     return SQUARE_HOME_COLS[vSlot]?.[piece.pathPosition - loopLen] ?? null;
   }
 
+  /** Same lookup as cellFor, but from a bare pathPosition rather than a full
+   *  Piece — what the box-by-box walk animation steps through. */
+  function coordForPath(playerIndex: number, pathPos: number): Point | null {
+    if (pathPos < 0) return null;
+    const vSlot = visualSlot(playerIndex);
+    const cell = isOnTrack(pathPos, playerCount)
+      ? SQUARE_TRACK[pathToTrack(pathPos, vSlot, playerCount)]
+      : SQUARE_HOME_COLS[vSlot]?.[pathPos - loopLen];
+    return cell ? cellXY(cell) : null;
+  }
+
+  /** A player's four home-base parking spots, in pixel space. */
+  function homeBaseSpots(slot: number): Point[] {
+    const [qr, qc] = SQUARE_HOME_QUADRANTS[visualSlot(slot)] ?? [0, 0];
+    return [
+      [qc * CELL + 1.8 * CELL, qr * CELL + 1.8 * CELL],
+      [qc * CELL + 4.2 * CELL, qr * CELL + 1.8 * CELL],
+      [qc * CELL + 1.8 * CELL, qr * CELL + 4.2 * CELL],
+      [qc * CELL + 4.2 * CELL, qr * CELL + 4.2 * CELL],
+    ];
+  }
+
+  const walking = useWalkAnimation(walkBatch, {
+    resolveXY: coordForPath,
+    homeBaseXY: (playerIndex, pieceIndex) => homeBaseSpots(playerIndex)[pieceIndex],
+  });
+
   /** Resting place for a finished piece, inside its owner's goal triangle
    *  (display space — `slot` is the REAL slotIndex). */
   function goalXY(slot: number, pieceIndex: number): Point {
@@ -105,11 +140,13 @@ export default function SquareBoard({
   }
 
   // Group everything on the board by cell, so pieces sharing a square fan out
-  // instead of hiding one another.
+  // instead of hiding one another. Pieces currently walking are excluded —
+  // they render separately, at their animated position, until the walk lands.
   const stacks = useMemo(() => {
     const map = new Map<string, { piece: Piece; player: Player }[]>();
     for (const player of players) {
       for (const piece of player.pieces) {
+        if (walking.has(piece.id)) continue;
         const cell = cellFor(piece, player.slotIndex);
         if (!cell) continue;
         const key = `${cell[0]}_${cell[1]}`;
@@ -119,22 +156,27 @@ export default function SquareBoard({
     }
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [players, playerCount, visualSlot]);
+  }, [players, playerCount, visualSlot, walking]);
 
-  /** Target square preview for the piece the player is about to move. */
+  /** Target square preview for the piece the player is about to move — and
+   *  whether that square would actually capture an opponent, so the preview
+   *  can look different for "step" versus "cut". */
   const previewCells = useMemo(() => {
-    if (!validMoveIds.size || !diceValue) return [] as Point[];
+    if (!validMoveIds.size || !diceValue) return [] as { cell: Point; capture: boolean }[];
     const me = players[myPlayerIndex];
-    if (!me) return [] as Point[];
+    if (!me) return [] as { cell: Point; capture: boolean }[];
     const myVisual = visualSlot(me.slotIndex);
-    const out: Point[] = [];
+    const out: { cell: Point; capture: boolean }[] = [];
     for (const piece of me.pieces) {
       if (!validMoveIds.has(piece.id)) continue;
       const nextPath = piece.status === 'home' ? 0 : piece.pathPosition + diceValue;
-      const cell = isOnTrack(nextPath, playerCount)
+      const onTrack = isOnTrack(nextPath, playerCount);
+      const cell = onTrack
         ? SQUARE_TRACK[pathToTrack(nextPath, myVisual, playerCount)]
         : SQUARE_HOME_COLS[myVisual]?.[nextPath - loopLen];
-      if (cell) out.push(cell);
+      if (!cell) continue;
+      const capture = onTrack && wouldCaptureAt(pathToTrack(nextPath, me.slotIndex, playerCount), me.slotIndex, players, playerCount);
+      out.push({ cell, capture });
     }
     return out;
   }, [validMoveIds, diceValue, players, myPlayerIndex, playerCount, loopLen, visualSlot]);
@@ -164,13 +206,20 @@ export default function SquareBoard({
         const player = players.find((p) => visualSlot(p.slotIndex) === slot);
         const color  = player ? PLAYER_COLORS[player.colorIndex] : null;
         const x = qc * CELL, y = qr * CELL;
+        const isTurn = !!player && player.slotIndex === highlightSlot;
+        // Left-half quadrants (qc === 0) anchor their name bottom-left;
+        // right-half ones (qc === 9) anchor it bottom-right — always toward
+        // the board's outer edge, never crowding the centre.
+        const onLeft = qc === 0;
         return (
           <g key={`quad-${slot}`} opacity={player ? 1 : 0.25}>
             <rect
               x={x} y={y} width={6 * CELL} height={6 * CELL}
               fill={color ? color.home : 'rgba(255,255,255,0.02)'}
               stroke={color ? color.hex : 'rgba(255,255,255,0.08)'}
-              strokeWidth={1.5}
+              strokeWidth={isTurn ? 3 : 1.5}
+              className={isTurn ? styles.turnGlow : undefined}
+              style={isTurn && color ? { filter: `drop-shadow(0 0 10px ${color.hex})` } : undefined}
               rx={10}
             />
             <rect
@@ -180,6 +229,18 @@ export default function SquareBoard({
               strokeWidth={1}
               rx={8}
             />
+            {player && (
+              <text
+                x={onLeft ? x + 0.35 * CELL : x + 5.65 * CELL}
+                y={y + 5.65 * CELL}
+                textAnchor={onLeft ? 'start' : 'end'}
+                fontSize={13} fill={color ? color.hex : '#fff'}
+                fontFamily="Orbitron, sans-serif" fontWeight={700}
+                style={{ userSelect: 'none' }}
+              >
+                {player.name.length > 12 ? `${player.name.slice(0, 11)}…` : player.name}
+              </text>
+            )}
             {!player && (
               <text
                 x={x + 3 * CELL} y={y + 3 * CELL}
@@ -276,33 +337,30 @@ export default function SquareBoard({
       </g>
 
       {/* ── Move preview ───────────────────────────────────────────────── */}
-      {previewCells.map((cell, i) => {
+      {previewCells.map(({ cell, capture }, i) => {
         const [x, y] = cellXY(cell);
         return (
           <circle
             key={`prev-${i}`} cx={x} cy={y} r={CELL * 0.42}
-            fill="none" stroke="rgba(255,255,255,0.55)"
-            strokeWidth={1.5} strokeDasharray="3 3"
-            className={styles.preview}
+            fill="none"
+            stroke={capture ? '#ff2d4a' : 'rgba(255,255,255,0.55)'}
+            strokeWidth={capture ? 2.2 : 1.5} strokeDasharray="3 3"
+            className={capture ? styles.previewCapture : styles.preview}
           />
         );
       })}
 
       {/* ── Pieces waiting in their home base ──────────────────────────── */}
       {players.map((player) => {
-        const [qr, qc] = SQUARE_HOME_QUADRANTS[visualSlot(player.slotIndex)] ?? [0, 0];
+        const spots = homeBaseSpots(player.slotIndex);
         const color = PLAYER_COLORS[player.colorIndex];
-        const spots: Point[] = [
-          [qc * CELL + 1.8 * CELL, qr * CELL + 1.8 * CELL],
-          [qc * CELL + 4.2 * CELL, qr * CELL + 1.8 * CELL],
-          [qc * CELL + 1.8 * CELL, qr * CELL + 4.2 * CELL],
-          [qc * CELL + 4.2 * CELL, qr * CELL + 4.2 * CELL],
-        ];
         return player.pieces.map((piece, i) => {
           // Only draw a marker for a piece that is genuinely still at home —
           // drawing all four unconditionally used to leave empty duplicate
           // nodes with the same test id as the piece out on the track.
-          if (piece.status !== 'home') return null;
+          // A piece still mid-walk into home renders in the walking overlay
+          // below instead, so it doesn't just pop in here before landing.
+          if (piece.status !== 'home' || walking.has(piece.id)) return null;
           const [x, y] = spots[i];
           return (
             <PieceMarker
@@ -311,8 +369,7 @@ export default function SquareBoard({
               color={color.hex}
               x={x} y={y} r={14}
               isValid={validMoveIds.has(piece.id)}
-              isMoving={piece.id === movingPiece}
-              isCapturing={piece.id === capturingPiece}
+              isCapturing={capturingPieces.has(piece.id)}
               label={`${player.name} piece ${i + 1}, in home base`}
               onActivate={onPieceClick}
             />
@@ -336,8 +393,7 @@ export default function SquareBoard({
               x={bx + offset} y={by}
               r={many ? 11 : 14}
               isValid={validMoveIds.has(piece.id)}
-              isMoving={piece.id === movingPiece}
-              isCapturing={piece.id === capturingPiece}
+              isCapturing={capturingPieces.has(piece.id)}
               isBlock={many && items.every((it) => it.player.slotIndex === player.slotIndex)}
               label={`${player.name} piece ${piece.pieceIndex + 1}`}
               onActivate={onPieceClick}
@@ -346,10 +402,31 @@ export default function SquareBoard({
         })
       )}
 
+      {/* ── Pieces mid-walk (box-by-box, forward or back to home) ───────── */}
+      {Array.from(walking.entries()).map(([pieceId, { xy, stepMs }]) => {
+        const player = players.find((p) => p.pieces.some((pc) => pc.id === pieceId));
+        const piece = player?.pieces.find((pc) => pc.id === pieceId);
+        if (!player || !piece) return null;
+        const color = PLAYER_COLORS[player.colorIndex];
+        return (
+          <PieceMarker
+            key={`walk-${pieceId}`}
+            piece={piece}
+            color={color.hex}
+            x={xy[0]} y={xy[1]} r={14}
+            isValid={false}
+            isCapturing={capturingPieces.has(pieceId)}
+            transitionMs={stepMs}
+            label={`${player.name} piece ${piece.pieceIndex + 1}`}
+            onActivate={onPieceClick}
+          />
+        );
+      })}
+
       {/* ── Finished pieces, parked in the goal ────────────────────────── */}
       {players.flatMap((player) =>
         player.pieces
-          .filter((p) => p.status === 'finished')
+          .filter((p) => p.status === 'finished' && !walking.has(p.id))
           .map((piece) => {
             const [x, y] = goalXY(player.slotIndex, piece.pieceIndex);
             const color = PLAYER_COLORS[player.colorIndex];
@@ -372,16 +449,18 @@ interface MarkerProps {
   color: string;
   x: number; y: number; r: number;
   isValid: boolean;
-  isMoving: boolean;
   isCapturing?: boolean;
   isBlock?: boolean;
+  /** Per-square walk transition time, while this marker is mid-walk. */
+  transitionMs?: number;
   label: string;
   onActivate: (pieceId: string) => void;
 }
 
 function PieceMarker({
-  piece, color, x, y, r, isValid, isMoving, isCapturing, isBlock, label, onActivate,
+  piece, color, x, y, r, isValid, isCapturing, isBlock, transitionMs, label, onActivate,
 }: MarkerProps) {
+  const posStyle = transitionMs != null ? { transitionDuration: `${transitionMs}ms` } : undefined;
   return (
     <g
       data-testid={`piece-${piece.id}`}
@@ -396,7 +475,7 @@ function PieceMarker({
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onActivate(piece.id); }
       }}
       style={{ cursor: isValid ? 'pointer' : 'default', outline: 'none' }}
-      className={`${isMoving ? styles.movingPiece : ''} ${isCapturing ? styles.captureFlash : ''}`}
+      className={isCapturing ? styles.captureFlash : undefined}
     >
       {isValid && (
         <circle cx={x} cy={y} r={r + 6} fill="rgba(255,255,255,0.1)"
@@ -406,7 +485,7 @@ function PieceMarker({
         cx={x} cy={y} r={r}
         fill={color} stroke="#fff" strokeWidth={2}
         className={styles.pieceCircle}
-        style={{ filter: `drop-shadow(0 0 ${isValid ? 10 : 4}px ${color})` }}
+        style={{ ...posStyle, filter: `drop-shadow(0 0 ${isValid ? 10 : 4}px ${color})` }}
       />
       {isBlock && (
         <circle cx={x} cy={y} r={r - 4} fill="none" stroke="#fff" strokeWidth={1.2} opacity={0.8} />
@@ -415,7 +494,7 @@ function PieceMarker({
         x={x} y={y} textAnchor="middle" dominantBaseline="central"
         fontSize={r > 12 ? 11 : 9} fill="#0d0d1a" fontWeight="bold"
         className={styles.pieceCircle}
-        style={{ userSelect: 'none', pointerEvents: 'none' }}
+        style={{ ...posStyle, userSelect: 'none', pointerEvents: 'none' }}
       >
         {piece.pieceIndex + 1}
       </text>

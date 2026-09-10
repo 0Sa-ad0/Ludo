@@ -25,8 +25,26 @@
   pointer-events: none;
 }
 
+/* Same ghost ring, but for a move that would capture — a faster, redder
+   pulse so "this cuts them" reads differently from "this just steps". */
+.previewCapture {
+  animation: pulse-glow 0.6s infinite;
+  pointer-events: none;
+}
+
 .captureFlash {
   animation: capture-flash 0.4s ease-out 2;
+}
+
+/* Whoever's turn it is right now, glowing on the board itself — not just the
+   dice or the side panel — so anyone glancing at the board can tell. */
+.turnGlow {
+  animation: turn-glow-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes turn-glow-pulse {
+  0%, 100% { stroke-opacity: 1; }
+  50%       { stroke-opacity: 0.45; }
 }
 
 /* Pieces glide to their new square instead of snapping — cx/cy are

@@ -30,8 +30,7 @@ const AUTO_MOVE_DELAY_MS = Number(process.env.AUTO_MOVE_DELAY_MS) || 1_200;
 // only ever taps the one highlighted piece. Playing it for them saves a
 // pointless click; this brief pause just lets the dice animation land
 // first, so the piece doesn't appear to jump before the roll registers.
-const FORCED_MOVE_DELAY_MS = Number(process.env.FORCED_MOVE_DELAY_MS) || 550;
-const TURN_TIMEOUT_MS    = Number(process.env.TURN_TIMEOUT_MS)    || 45_000;
+const FORCED_MOVE_DELAY_MS = Number(process.env.FORCED_MOVE_DELAY_MS) || 5_000;
 const SKIP_NOTICE_MS     = Number(process.env.SKIP_NOTICE_MS)     || 1_400;
 const ROOM_TTL_MS        = Number(process.env.ROOM_TTL_MS)        || 2 * 60 * 60 * 1000;
 const SWEEP_INTERVAL_MS  = 5 * 60 * 1000;
@@ -196,13 +195,18 @@ async function endGame(io, roomCode, state) {
 // ─── Turn watchdog ───────────────────────────────────────────────────────────
 
 /**
- * Arm the single timer that keeps a room moving. Exactly one of three things
+ * Arm the single timer that keeps a room moving. Exactly one of two things
  * is true of the player whose turn it is:
  *
- *   • offline and flipped to AUTO  → play their turn for them, shortly
- *   • connected                    → give them TURN_TIMEOUT_MS, then play it
- *                                    for them so one idle player cannot freeze
- *                                    the room for everybody else
+ *   • offline and flipped to AUTO  → play their turn for them, shortly, so a
+ *                                    genuinely dropped connection can't
+ *                                    freeze the room for everybody else
+ *   • connected                    → wait, however long it takes. Players in
+ *                                    this game are physically together on
+ *                                    different devices — someone thinking, or
+ *                                    just chatting, is not the same thing as
+ *                                    someone gone, and should never have
+ *                                    their turn silently taken from them.
  *   • offline, still inside the reconnect grace period → wait; the grace
  *                                    timer will re-arm us when it flips them
  */
@@ -236,8 +240,7 @@ function armTurn(io, roomCode) {
 
   let delay;
   if (!player.isConnected && player.isAuto) delay = AUTO_MOVE_DELAY_MS;
-  else if (player.isConnected)             delay = TURN_TIMEOUT_MS;
-  else                                     return; // inside the grace period
+  else                                     return; // connected (wait indefinitely), or inside the grace period
 
   const abortIfConnected = !player.isConnected;
   turnTimers.set(roomCode, setTimeout(() => {
@@ -626,6 +629,11 @@ Promise.all([app.prepare(), initDb()]).then(() => {
       if (valid.length === 1) {
         // Only one piece can legally move — nothing to choose, so play it
         // for them instead of making them tap the single highlighted piece.
+        // Broadcast the countdown to everyone, not just the roller, so the
+        // whole room can see why that piece is about to move on its own.
+        io.to(roomCode).emit('forced_move_pending', {
+          playerIndex, pieceId: valid[0], delayMs: FORCED_MOVE_DELAY_MS,
+        });
         clearTurnTimer(roomCode);
         await sleep(FORCED_MOVE_DELAY_MS);
         if (turnTokens.get(roomCode) !== token) return;

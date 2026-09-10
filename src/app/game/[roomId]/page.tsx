@@ -6,12 +6,15 @@ import { useRouter } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
 import type {
   GameState, DiceRolledPayload, PieceMovedPayload, TurnSkippedPayload, StoredJoin,
+  ForcedMovePendingPayload, Piece, WalkJob,
 } from '@/lib/types';
 import {
   PLAYER_COLORS, STORAGE_CREATE, STORAGE_ROOM, STORAGE_NAME,
-  DICE_ROLL_MIN_MS, ROLL_TIMEOUT_MS, TOAST_MS, MOVE_ANIM_MS,
+  DICE_ROLL_MIN_MS, ROLL_TIMEOUT_MS, TOAST_MS,
 } from '@/lib/constants';
 import { useSound } from '@/lib/useSound';
+import { useTurnNotifications } from '@/lib/useTurnNotifications';
+import { useBackgroundMusic } from '@/lib/useBackgroundMusic';
 import PingIndicator from '@/components/PingIndicator/PingIndicator';
 import SquareBoard from '@/components/Board/SquareBoard';
 import HexBoard from '@/components/Board/HexBoard';
@@ -49,8 +52,18 @@ export default function GamePage({ params }: GamePageProps) {
   const [error, setError]             = useState('');
   const [notice, setNotice]           = useState('');
   const [rollingDice, setRolling]     = useState(false);
-  const [movingPiece, setMovingPiece] = useState<string | null>(null);
-  const [capturing, setCapturing]     = useState<string | null>(null);
+  // Box-by-box walk jobs reconstructed from the state just before a move and
+  // just after it — see WalkJob. `id` changes on every genuine move so a
+  // board's effect can tell a new walk apart from an unrelated re-render.
+  const [walkBatch, setWalkBatch] = useState<{ id: number; jobs: WalkJob[] } | null>(null);
+  const walkBatchId = useRef(0);
+  const pendingWalkMeta = useRef<Array<Omit<WalkJob, 'toPath'>> | null>(null);
+  // Every captured piece flashes at the instant of capture — plural, since a
+  // single move can capture more than one opponent's piece at once.
+  const [capturing, setCapturing]     = useState<Set<string>>(new Set());
+  // A roll that leaves exactly one legal move: who, which piece, and when the
+  // server will play it, so the dice can show a countdown everyone can see.
+  const [forcedMove, setForcedMove] = useState<{ playerName: string; deadline: number } | null>(null);
   const [connecting, setConnecting]   = useState(true);
   const [kicked, setKicked]           = useState(false);
   // Opening a shared /game/CODE link has no stored name, so ask for one
@@ -62,6 +75,7 @@ export default function GamePage({ params }: GamePageProps) {
   const [joinError, setJoinError]     = useState('');
 
   const { play, muted, toggleMute } = useSound();
+  useBackgroundMusic(muted);
   // Socket handlers are registered once, so they read the moving parts through
   // refs rather than closing over a stale render's values. The refs are
   // updated in effects, never during render.
@@ -163,7 +177,30 @@ export default function GamePage({ params }: GamePageProps) {
       } catch { /* ignore */ }
     });
 
-    socket.on('game_state', (state) => {
+    socket.on('game_state', (state: GameState) => {
+      // A piece_moved just before this carried the OLD positions (see
+      // below); this broadcast is the first place the NEW ones are known, so
+      // this is where a pending walk actually becomes animatable. Finalizing
+      // it here, rather than in piece_moved itself, is what lets a piece
+      // finishing (which changes its status, not just its pathPosition) or
+      // being captured (status -> 'home') still resolve a real toPath before
+      // the authoritative render would otherwise just make it vanish.
+      const meta = pendingWalkMeta.current;
+      if (meta) {
+        pendingWalkMeta.current = null;
+        const jobs: WalkJob[] = [];
+        for (const m of meta) {
+          const piece = state.players[m.playerIndex]?.pieces.find((p) => p.id === m.pieceId);
+          if (!piece) continue;
+          // pathPosition already IS the right toPath in every case: the new
+          // position for a normal move, the goal value for one that just
+          // finished, and -1 (the getWalkSteps sentinel for "walk back to
+          // the start square") for one that was just captured and sent home.
+          jobs.push({ ...m, toPath: piece.pathPosition });
+        }
+        if (jobs.length) setWalkBatch({ id: ++walkBatchId.current, jobs });
+      }
+
       stateRef.current = state;
       setGameState(state);
       if (state.roomCode) setRoomCode(state.roomCode);
@@ -182,24 +219,58 @@ export default function GamePage({ params }: GamePageProps) {
       void value;
     });
 
-    socket.on('piece_moved', ({ pieceId, capturedPieces }: PieceMovedPayload) => {
-      setMovingPiece(pieceId);
-      setTimeout(() => setMovingPiece((p) => (p === pieceId ? null : p)), MOVE_ANIM_MS);
+    socket.on('piece_moved', ({ pieceId, playerIndex, capturedPieces }: PieceMovedPayload) => {
+      setForcedMove(null);
+
+      // stateRef.current is still the PRE-move state here — piece_moved is
+      // always emitted before the game_state that carries the new positions
+      // (see the server) — so this is the only moment the OLD position of
+      // every piece involved is still available, to reconstruct the walk.
+      const prev = stateRef.current;
+      const findPiece = (id: string): Piece | undefined => {
+        for (const pl of prev?.players ?? []) {
+          const p = pl.pieces.find((pc) => pc.id === id);
+          if (p) return p;
+        }
+        return undefined;
+      };
+      const jobs: Array<Omit<WalkJob, 'toPath'>> = [];
+      const mover = findPiece(pieceId);
+      if (mover) {
+        jobs.push({ pieceId, playerIndex, pieceIndex: mover.pieceIndex, fromPath: mover.pathPosition });
+      }
+      for (const cp of capturedPieces ?? []) {
+        const piece = findPiece(cp.id);
+        if (piece) {
+          jobs.push({
+            pieceId: cp.id, playerIndex: piece.playerIndex,
+            pieceIndex: piece.pieceIndex, fromPath: piece.pathPosition,
+          });
+        }
+      }
+      pendingWalkMeta.current = jobs.length ? jobs : null;
 
       if (capturedPieces?.length) {
         playRef.current.capture();
         const names = Array.from(new Set(capturedPieces.map((c) => c.playerName)));
         toast(`💥 Sent ${names.join(', ')} home!`);
-        setCapturing(pieceId);
-        setTimeout(() => setCapturing((p) => (p === pieceId ? null : p)), 800);
+        const ids = new Set(capturedPieces.map((c) => c.id));
+        setCapturing(ids);
+        setTimeout(() => setCapturing((cur) => (cur === ids ? new Set() : cur)), 800);
       } else {
         playRef.current.move();
       }
     });
 
+    socket.on('forced_move_pending', ({ playerIndex, delayMs }: ForcedMovePendingPayload) => {
+      const name = nameOf(playerIndex) ?? 'Player';
+      setForcedMove({ playerName: playerIndex === myIndexRef.current ? 'You' : name, deadline: Date.now() + delayMs });
+    });
+
     socket.on('turn_skipped', ({ playerIndex, value, reason }: TurnSkippedPayload) => {
       playRef.current.skip();
       setRolling(false);
+      setForcedMove(null);
       const mine = playerIndex === myIndexRef.current;
       const who = mine ? 'You' : (nameOf(playerIndex) ?? 'Player');
 
@@ -247,7 +318,7 @@ export default function GamePage({ params }: GamePageProps) {
       setTimeout(() => setError((e) => (e === msg ? '' : e)), 4000);
     });
 
-    socket.on('disconnect', () => setRolling(false));
+    socket.on('disconnect', () => { setRolling(false); setForcedMove(null); });
 
     return () => { socket.disconnect(); socketRef.current = null; setSocket(null); };
   }, [joinInfo, isCreate, roomId, toast]);
@@ -270,6 +341,7 @@ export default function GamePage({ params }: GamePageProps) {
 
   const myPlayer  = gameState?.players[myPlayerIndex];
   const isMyTurn  = gameState?.status === 'playing' && gameState.currentPlayerIndex === myPlayerIndex;
+  useTurnNotifications(!!isMyTurn, roomCode, play.turn);
   const isHex     = !!gameState && gameState.playerCount >= 5;
   const current   = gameState?.players[gameState.currentPlayerIndex];
   const turnColor = current ? PLAYER_COLORS[current.colorIndex]?.hex : '#888';
@@ -448,10 +520,12 @@ export default function GamePage({ params }: GamePageProps) {
         <div className={styles.boardContainer}>
           {isHex ? (
             <HexBoard gameState={gameState} myPlayerIndex={myPlayerIndex}
-              movingPiece={movingPiece} capturingPiece={capturing} onPieceClick={handleMove} />
+              walkBatch={walkBatch} capturingPieces={capturing} onPieceClick={handleMove}
+              diceSettled={!rollingDice} highlightSlot={gameState.currentPlayerIndex} />
           ) : (
             <SquareBoard gameState={gameState} myPlayerIndex={myPlayerIndex}
-              movingPiece={movingPiece} capturingPiece={capturing} onPieceClick={handleMove} />
+              walkBatch={walkBatch} capturingPieces={capturing} onPieceClick={handleMove}
+              diceSettled={!rollingDice} highlightSlot={gameState.currentPlayerIndex} />
           )}
         </div>
 
@@ -474,6 +548,7 @@ export default function GamePage({ params }: GamePageProps) {
           waitingForMove={!!isMyTurn && gameState.diceRolled}
           onRoll={handleRoll}
           currentPlayerColor={turnColor}
+          forcedMove={forcedMove}
         />
       </div>
 

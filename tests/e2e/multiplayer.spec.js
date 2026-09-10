@@ -8,6 +8,10 @@ const { clickUntil } = require('./helpers');
  */
 test.describe('Two-player game flow', () => {
   test('create, join, auto-start, and a synced roll+move', async ({ browser }) => {
+    // Up to 15 roll attempts, each potentially waiting out the dice's own
+    // ~3s roll animation before a legal move (needs a 6) shows up — the
+    // default 30s budget doesn't cover that worst case.
+    test.setTimeout(120_000);
     const hostCtx = await browser.newContext();
     const guestCtx = await browser.newContext();
     const host = await hostCtx.newPage();
@@ -56,8 +60,14 @@ test.describe('Two-player game flow', () => {
       const value = await currentPlayer.locator('#btn-roll-dice').getAttribute('data-value');
       expect(['1', '2', '3', '4', '5', '6']).toContain(value);
 
+      // The move preview/highlight is deliberately held back until the dice's
+      // own roll animation has visibly landed (DICE_ROLL_MIN_MS, currently
+      // 3s) — checking instantly here would misread "not highlighted yet"
+      // as "no legal move" and never click a piece that really is movable.
       const validPiece = currentPlayer.locator('[data-testid^="piece-"][data-valid="true"]:visible').first();
-      if (await validPiece.count() > 0 && await validPiece.isVisible().catch(() => false)) {
+      const hasValidMove = await validPiece.waitFor({ state: 'visible', timeout: 4000 })
+        .then(() => true).catch(() => false);
+      if (hasValidMove) {
         await validPiece.click();
         moved = true;
 

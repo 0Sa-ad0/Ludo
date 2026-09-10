@@ -15,7 +15,6 @@ let connect, closeAll;
 beforeAll(async () => {
   serverProcess = startServer(PORT, {
     RECONNECT_GRACE_MS: '400',
-    TURN_TIMEOUT_MS:    '900',
     AUTO_MOVE_DELAY_MS: '150',
     SKIP_NOTICE_MS:     '150',
   });
@@ -148,30 +147,34 @@ describe('host controls', () => {
 // ─── Turn flow ──────────────────────────────────────────────────────────────
 
 describe('turn flow', () => {
-  // A connected player who simply walks away used to freeze the room for
-  // everyone else for ever — there was no turn timer at all.
-  test('an idle connected player has their turn played for them', async () => {
-    const { host } = await makeRoom(connect, { names: ['Idle', 'Waiter'] });
-    // Nobody rolls. The watchdog (TURN_TIMEOUT_MS = 900ms) must move the game on.
-    const rolled = await waitForEvent(host, 'dice_rolled');
+  // Players in this game are physically together on separate devices —
+  // someone thinking or chatting is not the same as someone gone, so a
+  // connected player who just hasn't rolled yet must NOT have their turn
+  // taken from them, no matter how long they sit on it.
+  test('a connected player who has not rolled keeps their turn indefinitely', async () => {
+    const { host } = await makeRoom(connect, { names: ['Patient', 'Waiter'] });
+    let autoRolled = false;
+    host.on('dice_rolled', ({ isAuto }) => { if (isAuto) autoRolled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    expect(autoRolled).toBe(false);
+  }, 15000);
+
+  // The safety net that DOES still exist: a genuinely dropped connection
+  // (not just a slow one) still eventually gets its turn played for it, so
+  // one dead phone can't freeze the room for the other three forever. Drop
+  // the player whose turn it currently is (slot 0, at game start) and watch
+  // through the OTHER socket, since the dropped one obviously can't observe
+  // its own disconnect.
+  test('a disconnected player is flipped to AUTO and their turn gets played', async () => {
+    const { host, guests } = await makeRoom(connect, { names: ['Dropped', 'Stayer'] });
+    const auto = waitForEvent(guests[0], 'player_auto');
+    host.disconnect();
+    expect(await auto).toBe(0);
+
+    const rolled = await waitForEvent(guests[0], 'dice_rolled');
     expect(rolled.playerIndex).toBe(0);
     expect(rolled.isAuto).toBe(true);
   }, 15000);
-
-  test('the game keeps advancing on its own with both players idle', async () => {
-    const { host } = await makeRoom(connect, { names: ['Idle2', 'Idle3'] });
-    // Whoever is to blame, the turn must eventually come back around — i.e.
-    // no state can leave the room permanently stuck.
-    const seen = new Set();
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('game stalled')), 12000);
-      host.on('game_state', (s) => {
-        seen.add(s.currentPlayerIndex);
-        if (seen.size >= 2) { clearTimeout(timer); resolve(); }
-      });
-    });
-    expect(seen.size).toBeGreaterThanOrEqual(2);
-  }, 20000);
 
   test('a player who leaves mid-game is handed to AUTO without renumbering seats', async () => {
     const { host, guests } = await makeRoom(connect, { names: ['Stayer', 'Leaver'] });

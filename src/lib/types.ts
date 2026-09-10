@@ -78,6 +78,14 @@ export interface PieceMovedPayload {
   capturedPieces: CapturedPiece[];
 }
 
+/** Sent the instant a roll leaves exactly one legal move, before the server plays it for the player. */
+export interface ForcedMovePendingPayload {
+  playerIndex: number;
+  pieceId: string;
+  /** How long from now the server will wait before playing the move — for a client-side countdown. */
+  delayMs: number;
+}
+
 export interface TurnSkippedPayload {
   playerIndex: number;
   value: number;
@@ -97,6 +105,7 @@ export interface ServerToClientEvents {
   kicked:             () => void;
   dice_rolled:        (payload: DiceRolledPayload) => void;
   piece_moved:        (payload: PieceMovedPayload) => void;
+  forced_move_pending: (payload: ForcedMovePendingPayload) => void;
   turn_skipped:       (payload: TurnSkippedPayload) => void;
   game_over:          (rankings: number[]) => void;
   error:              (message: string) => void;
@@ -112,6 +121,20 @@ export interface ClientToServerEvents {
   roll_dice:   () => void;
   move_piece:  (payload: { pieceId: string }) => void;
   ping:        (clientTime: number) => void;
+}
+
+/**
+ * One piece's box-by-box walk, reconstructed client-side from the state just
+ * before a move and the state just after it (see rules.js's getWalkSteps).
+ * `toPath` of -1 means the piece was captured and is walking back to its
+ * home base rather than forward along the track.
+ */
+export interface WalkJob {
+  pieceId: string;
+  playerIndex: number;
+  pieceIndex: number;
+  fromPath: number;
+  toPath: number;
 }
 
 /** Stored per-room in sessionStorage so a refresh can rejoin the same seat. */

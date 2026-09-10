@@ -58,6 +58,7 @@ export function useSound() {
     move:    useCallback(() => { tone(620, 0.13, 'sine', 0.22); setTimeout(() => tone(820, 0.1, 'sine', 0.18), 90); }, [tone]),
     capture: useCallback(() => { tone(210, 0.28, 'sawtooth', 0.28); setTimeout(() => tone(150, 0.2, 'sawtooth', 0.2), 140); }, [tone]),
     skip:    useCallback(() => { tone(300, 0.16, 'triangle', 0.16); setTimeout(() => tone(220, 0.2, 'triangle', 0.14), 120); }, [tone]),
+    turn:    useCallback(() => sequence([[440, 0], [660, 100]], 'sine', 0.22), [sequence]),
     finish:  useCallback(() => sequence([[523, 0], [659, 130], [784, 260], [1047, 390]], 'sine', 0.3), [sequence]),
     win:     useCallback(() => sequence([[523, 0], [659, 150], [784, 300], [1047, 450], [1319, 600]], 'sine', 0.32), [sequence]),
   };

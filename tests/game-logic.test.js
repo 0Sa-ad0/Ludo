@@ -8,7 +8,7 @@ const {
 
 const {
   SQUARE_TRACK, SQUARE_HOME_COLS, getHexTrack, getHexHomeCols, getHexHomeBases,
-  HEX_VIEW, squareArm,
+  HEX_VIEW, squareArm, getWalkSteps, wouldCaptureAt,
 } = require('../src/lib/rules');
 
 // The square board is 4 players -> goal 56; the hex board is 6 -> goal 64.
@@ -792,5 +792,91 @@ describe('simulation', () => {
       expect(s.status).toBe('finished');
     }
     expect(sawForfeit).toBe(true);
+  });
+});
+
+// ─── getWalkSteps (box-by-box move animation) ──────────────────────────────
+
+describe('getWalkSteps', () => {
+  test('a normal forward move steps through every square in between', () => {
+    expect(getWalkSteps(10, 14)).toEqual([11, 12, 13, 14]);
+  });
+
+  test('released from home (fromPath -1): no intermediate squares to walk', () => {
+    expect(getWalkSteps(-1, 0)).toEqual([]);
+  });
+
+  test('a bonus-roll no-op move (same square) has nothing to walk', () => {
+    expect(getWalkSteps(7, 7)).toEqual([]);
+  });
+
+  test('captured and sent home (toPath -1) walks BACKWARD to the start square', () => {
+    expect(getWalkSteps(5, -1)).toEqual([4, 3, 2, 1, 0]);
+  });
+
+  test('captured right off the start square is a single-step walk back to 0', () => {
+    expect(getWalkSteps(1, -1)).toEqual([0]);
+  });
+
+  test('a one-square move is a single step', () => {
+    expect(getWalkSteps(20, 21)).toEqual([21]);
+  });
+});
+
+// ─── wouldCaptureAt (client-side capture preview) ──────────────────────────
+
+describe('wouldCaptureAt', () => {
+  function makePlayers() {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    return state.players;
+  }
+
+  test('true when a single opponent piece sits on that square', () => {
+    const players = makePlayers();
+    players[1].pieces[0].status = 'active';
+    players[1].pieces[0].trackPosition = 20;
+    expect(wouldCaptureAt(20, 0, players, 4)).toBe(true);
+  });
+
+  test('false on an empty square', () => {
+    const players = makePlayers();
+    expect(wouldCaptureAt(20, 0, players, 4)).toBe(false);
+  });
+
+  test('false on your own square (not \'opponent\')', () => {
+    const players = makePlayers();
+    players[0].pieces[1].status = 'active';
+    players[0].pieces[1].trackPosition = 20;
+    expect(wouldCaptureAt(20, 0, players, 4)).toBe(false);
+  });
+
+  test('false on a safe square, even with a lone opponent standing there', () => {
+    const players = makePlayers();
+    players[1].pieces[0].status = 'active';
+    players[1].pieces[0].trackPosition = 8; // a marked safe square
+    expect(wouldCaptureAt(8, 0, players, 4)).toBe(false);
+  });
+
+  test('false against a block of 2+ opponent pieces on the same square', () => {
+    const players = makePlayers();
+    [0, 1].forEach((i) => {
+      players[1].pieces[i].status = 'active';
+      players[1].pieces[i].trackPosition = 20;
+    });
+    expect(wouldCaptureAt(20, 0, players, 4)).toBe(false);
+  });
+
+  test('agrees with applyMove\'s real outcome on the exact same board', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    placeActive(state, 0, 0, 10);
+    state.players[1].pieces[0].status = 'active';
+    state.players[1].pieces[0].trackPosition = pathToTrack(23, 0, 4);
+    state.players[1].pieces[0].pathPosition = 5;
+
+    const targetTrack = pathToTrack(23, 0, 4);
+    expect(wouldCaptureAt(targetTrack, 0, state.players, 4)).toBe(true);
+
+    const next = applyMove(state, 0, 'p0_piece0', 13); // 10 + 13 = 23
+    expect(next.lastMove.capturedPieces).toEqual([{ id: 'p1_piece0', playerName: 'B' }]);
   });
 });

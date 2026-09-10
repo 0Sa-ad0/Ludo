@@ -24,10 +24,10 @@ let connect, closeAll;
 
 beforeAll(async () => {
   serverProcess = startServer(PORT, {
-    // Long enough that this test's own immediate reactions always win the
-    // race against the idle watchdog — this is a human-driven playthrough,
-    // not an AUTO one.
-    TURN_TIMEOUT_MS: '20000',
+    // Keep this test's forced-single-move pause short — it isn't testing the
+    // production delay value itself (that's a UX choice, not a rule), just
+    // that the server plays the only legal move unprompted.
+    FORCED_MOVE_DELAY_MS: '50',
   });
   await waitForServer(PORT);
   ({ connect, closeAll } = makeClientFactory(PORT));
