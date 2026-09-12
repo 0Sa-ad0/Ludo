@@ -10,7 +10,7 @@ import type {
 } from '@/lib/types';
 import {
   PLAYER_COLORS, STORAGE_CREATE, STORAGE_TEST, STORAGE_ROOM, STORAGE_NAME,
-  DICE_ROLL_MIN_MS, ROLL_TIMEOUT_MS, TOAST_MS,
+  DICE_ROLL_MIN_MS, ROLL_TIMEOUT_MS, TOAST_MS, WALK_STEP_MS,
 } from '@/lib/constants';
 import { useSound } from '@/lib/useSound';
 import { useTurnNotifications } from '@/lib/useTurnNotifications';
@@ -88,6 +88,61 @@ export default function GamePage({ params }: GamePageProps) {
 
   const rollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rollStartRef = useRef(0);
+  const rollingDiceRef = useRef(false);
+  useEffect(() => { rollingDiceRef.current = rollingDice; }, [rollingDice]);
+
+  // 2-second gap between one's dice and another's dice before rolling is permitted.
+  // This ONLY applies when the turn passes to a DIFFERENT player (not on bonus rolls).
+  const [turnCooldown, setTurnCooldown] = useState(false);
+  const prevPlayerIndexRef = useRef(-1);  // last player index that had the turn
+  const prevTurnKey = useRef('');
+  const lastTurnEventRef = useRef<{ type: 'move' | 'skip'; time: number }>({ type: 'move', time: 0 });
+
+  useEffect(() => {
+    if (!gameState || gameState.status !== 'playing') return;
+    const isMe = gameState.currentPlayerIndex === myPlayerIndex;
+    const currentOwner = gameState.currentPlayerIndex;
+    const turnKey = `${currentOwner}_${gameState.diceRolled}`;
+
+    if (prevTurnKey.current !== turnKey) {
+      const ownerChanged = prevPlayerIndexRef.current !== -1 && prevPlayerIndexRef.current !== currentOwner;
+
+      // Clear notice when the turn moves to a different player
+      if (ownerChanged) {
+        setNotice('');
+      }
+
+      // Apply the 2-second cooldown only when:
+      //  - it is now my turn
+      //  - the turn just arrived from a DIFFERENT player (not a bonus roll on my own turn)
+      //  - dice hasn't been rolled yet (fresh roll slot)
+      if (isMe && ownerChanged && !gameState.diceRolled) {
+        const last = lastTurnEventRef.current;
+        let delay = 2000;
+        if (last.type === 'skip') {
+          const elapsed = Date.now() - last.time;
+          // Server already paused during the skip notice; only wait remainder if any
+          delay = Math.max(0, 2000 - elapsed);
+        }
+        if (delay > 50) {
+          setTurnCooldown(true);
+          const timer = setTimeout(() => setTurnCooldown(false), delay);
+          prevPlayerIndexRef.current = currentOwner;
+          prevTurnKey.current = turnKey;
+          return () => clearTimeout(timer);
+        } else {
+          setTurnCooldown(false);
+        }
+      } else if (!isMe || !ownerChanged) {
+        // Bonus roll on my own turn — no cooldown
+        setTurnCooldown(false);
+      }
+
+      prevPlayerIndexRef.current = currentOwner;
+      prevTurnKey.current = turnKey;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState?.currentPlayerIndex, gameState?.diceRolled, gameState?.status, myPlayerIndex]);
 
   const toast = useCallback((msg: string) => {
     setNotice(msg);
@@ -205,6 +260,19 @@ export default function GamePage({ params }: GamePageProps) {
           // finished, and -1 (the getWalkSteps sentinel for "walk back to
           // the start square") for one that was just captured and sent home.
           jobs.push({ ...m, toPath: piece.pathPosition });
+
+          // When a piece/ball reaches the destination (goal), play the clapping sound!
+          const prevPiece = stateRef.current?.players[m.playerIndex]?.pieces.find((p) => p.id === m.pieceId);
+          if (prevPiece && prevPiece.status !== 'finished' && piece.status === 'finished') {
+            const steps = Math.max(1, Math.abs(piece.pathPosition - prevPiece.pathPosition));
+            const walkDurationMs = steps * WALK_STEP_MS;
+            setTimeout(() => {
+              playRef.current.clap();
+              const isMe = m.playerIndex === myIndexRef.current;
+              const pName = isMe ? 'Your' : `${state.players[m.playerIndex]?.name ?? 'Player'}'s`;
+              toast(`👏 ${pName} piece reached the destination!`);
+            }, walkDurationMs);
+          }
         }
         if (jobs.length) setWalkBatch({ id: ++walkBatchId.current, jobs });
       }
@@ -219,15 +287,23 @@ export default function GamePage({ params }: GamePageProps) {
 
     socket.on('dice_rolled', ({ value, isAuto }: DiceRolledPayload) => {
       playRef.current.dice();
-      // Let the tumble finish even when the server answers in 5ms on LAN —
-      // stopping it the instant the value arrives meant it never animated.
-      const elapsed = Date.now() - rollStartRef.current;
-      const wait = isAuto ? 0 : Math.max(0, DICE_ROLL_MIN_MS - elapsed);
-      setTimeout(() => setRolling(false), wait);
+      const isOurRoll = rollStartRef.current > 0 && (Date.now() - rollStartRef.current < 10000);
+      const elapsed = isOurRoll ? (Date.now() - rollStartRef.current) : 0;
+      const rollDuration = DICE_ROLL_MIN_MS;
+      const wait = Math.max(0, rollDuration - elapsed);
+      setRolling(true);
+      rollingDiceRef.current = true;
+      rollStartRef.current = 0;
+      if (rollTimerRef.current) clearTimeout(rollTimerRef.current);
+      rollTimerRef.current = setTimeout(() => {
+        setRolling(false);
+        rollingDiceRef.current = false;
+      }, wait);
       void value;
     });
 
     socket.on('piece_moved', ({ pieceId, playerIndex, capturedPieces }: PieceMovedPayload) => {
+      lastTurnEventRef.current = { type: 'move', time: Date.now() };
       setForcedMove(null);
 
       // stateRef.current is still the PRE-move state here — piece_moved is
@@ -276,22 +352,34 @@ export default function GamePage({ params }: GamePageProps) {
     });
 
     socket.on('turn_skipped', ({ playerIndex, value, reason }: TurnSkippedPayload) => {
-      playRef.current.skip();
-      setRolling(false);
+      lastTurnEventRef.current = { type: 'skip', time: Date.now() };
       setForcedMove(null);
       const mine = playerIndex === myIndexRef.current;
       const who = mine ? 'You' : (nameOf(playerIndex) ?? 'Player');
 
-      if (reason === 'three-sixes') {
-        toast(`🎲🎲🎲 Three 6s in a row — ${mine ? 'your' : `${who}'s`} turn is forfeited!`);
-        return;
-      }
+      const handleNotice = () => {
+        playRef.current.skip();
+        if (reason === 'three-sixes') {
+          toast(`🎲🎲🎲 Three 6s in a row — ${mine ? 'your' : `${who}'s`} turn is forfeited!`);
+          return;
+        }
 
-      // A 6 keeps the turn, so "skipped" would be wrong — they roll again.
-      const outcome = value === 6
-        ? (mine ? 'Roll again.' : `${who} rolls again.`)
-        : (mine ? 'Your turn was skipped.' : `${who}'s turn was skipped.`);
-      toast(`🎲 ${value} — no legal move. ${outcome}`);
+        // A 6 keeps the turn, so "skipped" would be wrong — they roll again.
+        if (value === 6) {
+          // Bonus roll — only notify the affected player
+          if (mine) toast('Roll again.');
+        } else {
+          // No legal move — only show the notice on that player's own screen
+          if (mine) toast('No Legal Move');
+        }
+      };
+
+      // If the dice is currently rolling, wait until the roll animation finishes before showing the notice
+      if (rollingDiceRef.current) {
+        setTimeout(handleNotice, DICE_ROLL_MIN_MS);
+      } else {
+        handleNotice();
+      }
     });
 
     socket.on('player_left', (i) => {
@@ -357,15 +445,19 @@ export default function GamePage({ params }: GamePageProps) {
   // ── Actions ─────────────────────────────────────────────────────────────
   const handleRoll = useCallback(() => {
     const socket = socketRef.current;
-    if (!socket || !isMyTurn || gameState?.diceRolled || rollingDice) return;
+    if (!socket || !isMyTurn || gameState?.diceRolled || rollingDice || turnCooldown) return;
     rollStartRef.current = Date.now();
     setRolling(true);
+    rollingDiceRef.current = true;
     socket.emit('roll_dice');
     // If the roll is never answered (rejected, or the socket dropped), don't
     // leave the button spinning for ever.
     if (rollTimerRef.current) clearTimeout(rollTimerRef.current);
-    rollTimerRef.current = setTimeout(() => setRolling(false), ROLL_TIMEOUT_MS);
-  }, [isMyTurn, gameState?.diceRolled, rollingDice]);
+    rollTimerRef.current = setTimeout(() => {
+      setRolling(false);
+      rollingDiceRef.current = false;
+    }, ROLL_TIMEOUT_MS);
+  }, [isMyTurn, gameState?.diceRolled, rollingDice, turnCooldown]);
 
   const handleMove = useCallback((pieceId: string) => {
     socketRef.current?.emit('move_piece', { pieceId });
@@ -530,7 +622,7 @@ export default function GamePage({ params }: GamePageProps) {
         <DiceRoller
           value={gameState.diceValue}
           rolling={rollingDice}
-          canRoll={!!isMyTurn && !gameState.diceRolled && !myPlayer?.isFinished}
+          canRoll={!!isMyTurn && !gameState.diceRolled && !myPlayer?.isFinished && !turnCooldown && !rollingDice}
           waitingForMove={!!isMyTurn && gameState.diceRolled}
           onRoll={handleRoll}
           currentPlayerColor={turnColor}

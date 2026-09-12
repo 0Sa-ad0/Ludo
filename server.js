@@ -31,7 +31,8 @@ const AUTO_MOVE_DELAY_MS = Number(process.env.AUTO_MOVE_DELAY_MS) || 1_200;
 // pointless click; this brief pause just lets the dice animation land
 // first, so the piece doesn't appear to jump before the roll registers.
 const FORCED_MOVE_DELAY_MS = Number(process.env.FORCED_MOVE_DELAY_MS) || 5_000;
-const SKIP_NOTICE_MS     = Number(process.env.SKIP_NOTICE_MS)     || 1_400;
+const SKIP_NOTICE_MS     = Number(process.env.SKIP_NOTICE_MS)     || 2_000;
+const TURN_GAP_MS        = Number(process.env.TURN_GAP_MS)        || 2_000;
 const ROOM_TTL_MS        = Number(process.env.ROOM_TTL_MS)        || 2 * 60 * 60 * 1000;
 const SWEEP_INTERVAL_MS  = 5 * 60 * 1000;
 
@@ -210,7 +211,7 @@ async function endGame(io, roomCode, state) {
  *   • offline, still inside the reconnect grace period → wait; the grace
  *                                    timer will re-arm us when it flips them
  */
-function armTurn(io, roomCode) {
+function armTurn(io, roomCode, delayOverride = null) {
   clearTurnTimer(roomCode);
   const state = gameRooms.get(roomCode);
   if (!state || state.status !== 'playing') return;
@@ -239,7 +240,7 @@ function armTurn(io, roomCode) {
   if (corrected) broadcastState(io, roomCode, state);
 
   let delay;
-  if (!player.isConnected && player.isAuto) delay = AUTO_MOVE_DELAY_MS;
+  if (!player.isConnected && player.isAuto) delay = delayOverride !== null ? delayOverride : TURN_GAP_MS;
   else                                     return; // connected (wait indefinitely), or inside the grace period
 
   const abortIfConnected = !player.isConnected;
@@ -263,13 +264,15 @@ async function playAutomaticTurn(io, roomCode, { abortIfConnected = false } = {}
     return s && s.status === 'playing' && s.currentPlayerIndex === pi;
   };
 
+  let token = turnTokens.get(roomCode);
+
   if (!state.diceRolled) {
     const value = rollDie();
     const forfeited = registerRoll(state, value);
     state.diceValue  = value;
     state.diceRolled = true;
     touch(state);
-    const token = bumpTurn(roomCode);
+    token = bumpTurn(roomCode);
 
     io.to(roomCode).emit('dice_rolled', { playerIndex: pi, value, isAuto: true });
     broadcastState(io, roomCode, state);
@@ -321,17 +324,20 @@ async function playAutomaticTurn(io, roomCode, { abortIfConnected = false } = {}
     broadcastState(io, roomCode, newState);
 
     if (newState.status === 'finished') return endGame(io, roomCode, newState);
-    return armTurn(io, roomCode);
+    return armTurn(io, roomCode, TURN_GAP_MS);
   }
 
   // Nothing legal to do with this roll.
   io.to(roomCode).emit('turn_skipped', { playerIndex: pi, value, isAuto: true });
+  await sleep(TURN_GAP_MS);
+  if (turnTokens.get(roomCode) !== token) return;
+
   skipTurn(state, pi, value);
   touch(state);
   bumpTurn(roomCode);
   await saveGameState(state);
   broadcastState(io, roomCode, state);
-  armTurn(io, roomCode);
+  armTurn(io, roomCode, 0);
 }
 
 // ─── Room bookkeeping ────────────────────────────────────────────────────────
@@ -699,7 +705,7 @@ Promise.all([app.prepare(), initDb()]).then(() => {
         broadcastState(io, roomCode, newState);
 
         if (newState.status === 'finished') return endGame(io, roomCode, newState);
-        return armTurn(io, roomCode);
+        return armTurn(io, roomCode, TURN_GAP_MS);
       }
 
       // Nothing legal. Hold the roll on screen briefly so the player can see
@@ -718,7 +724,7 @@ Promise.all([app.prepare(), initDb()]).then(() => {
       bumpTurn(roomCode);
       await saveGameState(s);
       broadcastState(io, roomCode, s);
-      armTurn(io, roomCode);
+      armTurn(io, roomCode, 0);
     });
 
     // ── Move ────────────────────────────────────────────────────────────────
@@ -749,7 +755,7 @@ Promise.all([app.prepare(), initDb()]).then(() => {
       broadcastState(io, roomCode, newState);
 
       if (newState.status === 'finished') return endGame(io, roomCode, newState);
-      armTurn(io, roomCode);
+      armTurn(io, roomCode, TURN_GAP_MS);
     });
 
     // ── Leave ───────────────────────────────────────────────────────────────

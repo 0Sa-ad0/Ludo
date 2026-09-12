@@ -28,11 +28,11 @@ export const PING_GOOD = 100;
 export const PING_FAIR = 300;
 
 // ─── Client-side UI timings (ms) ─────────────────────────────────────────────
-/** Minimum time the dice tumbles, so the roll reads as an actual roll, not a flicker. */
-export const DICE_ROLL_MIN_MS = 3_000;
+/** Minimum time the dice tumbles — matches the CSS dice-tumble animation (1.0 s). */
+export const DICE_ROLL_MIN_MS = 1_000;
 /** How long a roll request may hang before the button unsticks itself. */
-export const ROLL_TIMEOUT_MS  = 6_000;
-export const TOAST_MS         = 3_200;
+export const ROLL_TIMEOUT_MS  = 7_000;
+export const TOAST_MS         = 2_000;
 /** One square of a piece's box-by-box walk (see getWalkSteps). */
 export const WALK_STEP_MS     = 150;
 /** A walk never takes longer than this in total — a captured piece sent home

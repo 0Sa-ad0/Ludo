@@ -1,37 +1,204 @@
+/* ─── Layout ────────────────────────────────────────────────────────────── */
 .wrapper {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 18px;
 }
 
-.dice {
-  width: 70px;
-  height: 70px;
-  border-radius: 18px;
+/* ─── Outer button ──────────────────────────────────────────────────────── */
+.diceBtn {
+  width: 72px;
+  height: 72px;
   background: none;
   border: none;
   padding: 0;
   cursor: default;
-  transition: transform 0.2s, filter 0.2s;
   flex-shrink: 0;
   touch-action: manipulation;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease;
 }
 
+/* Inviting bounce when it's your turn to roll */
 .rollable {
   cursor: pointer;
   animation: bounce 1.2s ease-in-out infinite;
 }
 
-.rollable:active { transform: scale(0.9); }
-
-/* Loops while the roll is in flight — a single pass used to end long before
-   the dice settled, leaving it visibly frozen mid-turn. */
-.rolling {
-  animation: dice-roll 0.6s linear infinite !important;
+.rollable:hover {
+  transform: scale(1.06);
 }
 
-.diceSvg { width: 100%; height: 100%; }
+.rollable:active {
+  transform: scale(0.95);
+}
 
+/* ─── Flat SVG Dice (Idle, ready, settled — original style) ─────────────── */
+.diceSvg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Number pop-in animation when roll completes */
+.settled {
+  animation: pop-in 0.32s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+/* ─── Forced Move Countdown Overlay ─────────────────────────────────────── */
+.countdownRing {
+  position: absolute;
+  inset: -4px;
+  width: calc(100% + 8px);
+  height: calc(100% + 8px);
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* ─── 3D Rolling Tumble Scene (Active Roll Only) ─────────────────────────── */
+.tumbleScene {
+  width: 72px;
+  height: 72px;
+  perspective: 380px;
+  perspective-origin: 50% 50%;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Realistic Ground Shadow under tumbling die */
+.diceShadow {
+  position: absolute;
+  bottom: 2px;
+  width: 50px;
+  height: 10px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0) 72%);
+  animation: dice-shadow 1s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+  pointer-events: none;
+}
+
+/* 3D Cube Container */
+.cube {
+  width: 56px;
+  height: 56px;
+  position: relative;
+  transform-style: preserve-3d;
+  animation: dice-tumble 1s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+}
+
+/* Cube Faces */
+.face {
+  position: absolute;
+  inset: 0;
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.cubeFaceSvg {
+  width: 100%;
+  height: 100%;
+  border-radius: 12px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.6);
+}
+
+/* 3D positions of the 6 faces (half size = 28px) */
+.front  { transform: rotateY(  0deg) translateZ(28px); }
+.back   { transform: rotateY(180deg) translateZ(28px); }
+.right  { transform: rotateY( 90deg) translateZ(28px); }
+.left   { transform: rotateY(-90deg) translateZ(28px); }
+.top    { transform: rotateX( 90deg) translateZ(28px); }
+.bottom { transform: rotateX(-90deg) translateZ(28px); }
+
+/* ─── Real-Life Physics Keyframes for Rolling ────────────────────────────── */
+@keyframes dice-tumble {
+  0% {
+    transform: translateY(0) rotateX(0deg) rotateY(0deg) rotateZ(0deg) scale3d(1, 1, 1);
+  }
+  14% {
+    /* Tossed into the air with aggressive spin */
+    transform: translateY(-22px) rotateX(260deg) rotateY(190deg) rotateZ(50deg) scale3d(1.14, 1.14, 1.14);
+  }
+  30% {
+    /* High tumble apex */
+    transform: translateY(-12px) rotateX(560deg) rotateY(430deg) rotateZ(130deg) scale3d(1.06, 1.06, 1.06);
+  }
+  48% {
+    /* First heavy table impact */
+    transform: translateY(4px) rotateX(860deg) rotateY(700deg) rotateZ(210deg) scale3d(0.96, 0.96, 0.96);
+  }
+  64% {
+    /* Second bounce */
+    transform: translateY(-7px) rotateX(1080deg) rotateY(880deg) rotateZ(290deg) scale3d(1.04, 1.04, 1.04);
+  }
+  78% {
+    /* Second impact & edge wobble */
+    transform: translateY(2px) rotateX(1240deg) rotateY(1000deg) rotateZ(335deg) scale3d(0.98, 0.98, 0.98);
+  }
+  90% {
+    /* Friction braking & tilt settle */
+    transform: translateY(-2px) rotateX(1360deg) rotateY(1060deg) rotateZ(355deg) scale3d(1.01, 1.01, 1.01);
+  }
+  96% {
+    /* Final micro tap */
+    transform: translateY(1px) rotateX(1410deg) rotateY(1075deg) rotateZ(360deg) scale3d(0.99, 0.99, 0.99);
+  }
+  100% {
+    /* Settled */
+    transform: translateY(0) rotateX(1440deg) rotateY(1080deg) rotateZ(360deg) scale3d(1, 1, 1);
+  }
+}
+
+@keyframes dice-shadow {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  14% {
+    transform: scale(0.55);
+    opacity: 0.2;
+  }
+  30% {
+    transform: scale(0.8);
+    opacity: 0.38;
+  }
+  48% {
+    transform: scale(1.18);
+    opacity: 0.85;
+  }
+  64% {
+    transform: scale(0.82);
+    opacity: 0.4;
+  }
+  78% {
+    transform: scale(1.08);
+    opacity: 0.75;
+  }
+  90% {
+    transform: scale(0.96);
+    opacity: 0.55;
+  }
+  96% {
+    transform: scale(1.02);
+    opacity: 0.68;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+}
+
+/* ─── Hint / Label Area ─────────────────────────────────────────────────── */
 .hint {
   font-family: 'Orbitron', sans-serif;
   font-size: 0.72rem;
@@ -40,13 +207,42 @@
 
 .tapHint {
   font-weight: 700;
-  animation: pulse-glow 1s infinite;
+  animation: pulse-glow 1.2s infinite;
 }
 
-.rolled { color: var(--text); }
-.rolled strong { color: var(--gold); font-size: 1.1rem; }
-.waiting { color: var(--text-dim); }
+.rollingHint {
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  animation: pulse-glow 0.8s infinite;
+}
 
+.rolled {
+  color: var(--text);
+}
+
+.rolled strong {
+  color: var(--gold);
+  font-size: 1.1rem;
+}
+
+.waiting {
+  color: var(--text-dim);
+}
+
+/* ─── Mobile ────────────────────────────────────────────────────────────── */
 @media (max-width: 480px) {
-  .dice { width: 58px; height: 58px; }
+  .diceBtn, .tumbleScene {
+    width: 62px;
+    height: 62px;
+  }
+  .cube, .face {
+    width: 48px;
+    height: 48px;
+  }
+  .front  { transform: rotateY(  0deg) translateZ(24px); }
+  .back   { transform: rotateY(180deg) translateZ(24px); }
+  .right  { transform: rotateY( 90deg) translateZ(24px); }
+  .left   { transform: rotateY(-90deg) translateZ(24px); }
+  .top    { transform: rotateX( 90deg) translateZ(24px); }
+  .bottom { transform: rotateX(-90deg) translateZ(24px); }
 }
