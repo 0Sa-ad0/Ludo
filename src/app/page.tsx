@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { STORAGE_CREATE, STORAGE_ROOM, STORAGE_NAME } from '@/lib/constants';
+import { STORAGE_CREATE, STORAGE_TEST, STORAGE_ROOM, STORAGE_NAME } from '@/lib/constants';
 import { MIN_PLAYERS, MAX_PLAYERS } from '@/lib/board';
 import { useStoredPreference } from '@/lib/useStoredPreference';
 import styles from './page.module.css';
@@ -12,10 +12,14 @@ const PLAYER_COUNT_OPTIONS = Array.from(
   (_, i) => MIN_PLAYERS + i,
 );
 
+// Test room uses the same range as normal rooms (2–6)
+const TEST_PLAYER_COUNT_OPTIONS = PLAYER_COUNT_OPTIONS;
+
 export default function LobbyPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<'home' | 'create' | 'join'>('home');
+  const [mode, setMode] = useState<'home' | 'create' | 'join' | 'test'>('home');
   const [playerCount, setPlayerCount] = useState(4);
+  const [testPlayerCount, setTestPlayerCount] = useState(4);
   // Remembered from the last game on this device.
   const [playerName, setPlayerName] = useStoredPreference(STORAGE_NAME, '');
   const [roomCode, setRoomCode] = useState('');
@@ -49,6 +53,19 @@ export default function LobbyPage() {
       password: usePassword ? password : '',
     }));
     router.push('/game/create');
+  }
+
+  function handleTestRoom() {
+    const name = playerName.trim();
+    if (!name) { setError('Enter your name'); return; }
+    setError('');
+    setLoading(true);
+    remember(name);
+    sessionStorage.setItem(STORAGE_TEST, JSON.stringify({
+      playerName: name,
+      playerCount: testPlayerCount,
+    }));
+    router.push('/game/test');
   }
 
   function handleJoin() {
@@ -85,6 +102,10 @@ export default function LobbyPage() {
           <button id="btn-join-room" className={`btn btn-secondary ${styles.mainBtn}`}
             onClick={() => setMode('join')}>
             🔗 Join Room
+          </button>
+          <button id="btn-test-room" className={`btn btn-secondary ${styles.mainBtn} ${styles.testRoomBtn}`}
+            onClick={() => { setMode('test'); setError(''); }}>
+            🧪 Test Room
           </button>
           <button id="btn-leaderboard" className={`btn btn-ghost ${styles.mainBtn}`}
             onClick={() => router.push('/leaderboard')}>
@@ -197,6 +218,62 @@ export default function LobbyPage() {
           <button id="btn-join-confirm" type="submit" className="btn btn-primary"
             style={{ width: '100%', marginTop: 8 }} disabled={loading}>
             {loading ? 'Joining…' : '🚪 Join Game'}
+          </button>
+        </form>
+      )}
+
+      {mode === 'test' && (
+        <form
+          className={`${styles.card} card`}
+          style={{ animation: 'slide-up 0.3s ease' }}
+          onSubmit={(e) => { e.preventDefault(); handleTestRoom(); }}
+        >
+          <button type="button" className={`btn btn-ghost ${styles.backBtn}`}
+            onClick={() => { setMode('home'); setError(''); }}>← Back</button>
+
+          <div className={styles.testRoomHeader}>
+            <span className={styles.testBadge}>🧪 TEST ROOM</span>
+            <h2 className={`${styles.sectionTitle} font-orbitron`}>Test Room</h2>
+            <p className={styles.testDesc}>
+              Same rules, same board — bots fill the remaining slots and the game starts instantly.
+            </p>
+          </div>
+
+          <div className={styles.field}>
+            <label className={styles.label} htmlFor="input-test-name">Your Name</label>
+            <input id="input-test-name" className="input" placeholder="Enter your name"
+              value={playerName} onChange={(e) => setPlayerName(e.target.value)}
+              maxLength={20} autoFocus autoComplete="nickname" />
+          </div>
+
+          <div className={styles.field}>
+            <span className={styles.label} id="test-player-count-label">Total Players (you + bots)</span>
+            <div className={styles.playerCountGrid} role="group" aria-labelledby="test-player-count-label">
+              {TEST_PLAYER_COUNT_OPTIONS.map((n) => (
+                <button
+                  key={n} type="button" id={`btn-test-player-count-${n}`}
+                  className={`${styles.countBtn} ${testPlayerCount === n ? styles.countBtnActive : ''}`}
+                  onClick={() => setTestPlayerCount(n)}
+                  aria-pressed={testPlayerCount === n}
+                >
+                  {n}
+                  {n >= 5 && <span className={styles.hexTag}>HEX</span>}
+                </button>
+              ))}
+            </div>
+            {testPlayerCount >= 2 && testPlayerCount <= 4 && (
+              <p className={styles.testHint}>🤖 You + {testPlayerCount - 1} bot{testPlayerCount - 1 > 1 ? 's' : ''} · Square board</p>
+            )}
+            {testPlayerCount >= 5 && (
+              <p className={styles.hint}>⬡ You + {testPlayerCount - 1} bots · Hexagonal board</p>
+            )}
+          </div>
+
+          {error && <p className={styles.error} role="alert">{error}</p>}
+
+          <button id="btn-test-confirm" type="submit" className={`btn btn-primary ${styles.testStartBtn}`}
+            style={{ width: '100%', marginTop: 8 }} disabled={loading}>
+            {loading ? 'Starting…' : '🚀 Start Test Game'}
           </button>
         </form>
       )}

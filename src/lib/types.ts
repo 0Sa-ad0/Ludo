@@ -47,6 +47,7 @@ export interface GameState {
   rankings: number[];   // player slot indices, in finish order
   createdAt?: number;
   lastActivity?: number;
+  isTestRoom?: boolean;
 }
 
 export interface CapturedPiece {
@@ -113,8 +114,9 @@ export interface ServerToClientEvents {
 }
 
 export interface ClientToServerEvents {
-  create_room: (payload: { playerCount: number; playerName: string; password?: string }) => void;
-  join_room:   (payload: { roomCode: string; playerName: string; password?: string }) => void;
+  create_room:      (payload: { playerCount: number; playerName: string; password?: string }) => void;
+  create_test_room: (payload: { playerCount: number; playerName: string }) => void;
+  join_room:        (payload: { roomCode: string; playerName: string; password?: string }) => void;
   start_game:  () => void;
   kick_player: (payload: { slotIndex: number }) => void;
   leave_room:  () => void;

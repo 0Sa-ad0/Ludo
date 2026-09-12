@@ -457,6 +457,49 @@ Promise.all([app.prepare(), initDb()]).then(() => {
       broadcastState(io, roomCode, state);
     });
 
+    // ── Create test room (offline, bots fill remaining slots) ───────────────
+    socket.on('create_test_room', async ({ playerCount, playerName } = {}) => {
+      const name  = cleanName(playerName);
+      const count = Number(playerCount);
+      if (!name) return fail('Enter your name');
+      if (!isValidPlayerCount(count)) {
+        return fail(`Player count must be between ${MIN_PLAYERS} and ${MAX_PLAYERS}`);
+      }
+
+      let roomCode = 'TEST' + generateRoomCode().slice(0, 2);
+      while (gameRooms.has(roomCode)) roomCode = 'TEST' + generateRoomCode().slice(0, 2);
+
+      const state = createInitialState(roomCode, count, null);
+      state.isTestRoom = true;
+      touch(state);
+
+      // Slot 0 is the human player
+      const human = createPlayer(state.id, name, 0, 0);
+      human.socketId    = socket.id;
+      human.isConnected = true;
+      state.players.push(human);
+
+      // Fill remaining slots with bots
+      const botNames = ['Bot Alpha', 'Bot Beta', 'Bot Gamma', 'Bot Delta', 'Bot Epsilon'];
+      for (let i = 1; i < count; i++) {
+        const bot = createPlayer(state.id, botNames[i - 1] || `Bot ${i}`, i, i);
+        bot.isAuto      = true;
+        bot.isConnected = false;
+        state.players.push(bot);
+      }
+
+      gameRooms.set(roomCode, state);
+
+      socket.join(roomCode);
+      socket.data.roomCode    = roomCode;
+      socket.data.playerIndex = 0;
+
+      socket.emit('room_created', { roomCode, playerIndex: 0 });
+      broadcastState(io, roomCode, state);
+
+      // Auto-start immediately
+      await startGame(roomCode, state);
+    });
     // ── Join / reconnect ────────────────────────────────────────────────────
     socket.on('join_room', async ({ roomCode, playerName, password } = {}) => {
       const name = cleanName(playerName);

@@ -9,7 +9,7 @@ import type {
   ForcedMovePendingPayload, Piece, WalkJob,
 } from '@/lib/types';
 import {
-  PLAYER_COLORS, STORAGE_CREATE, STORAGE_ROOM, STORAGE_NAME,
+  PLAYER_COLORS, STORAGE_CREATE, STORAGE_TEST, STORAGE_ROOM, STORAGE_NAME,
   DICE_ROLL_MIN_MS, ROLL_TIMEOUT_MS, TOAST_MS,
 } from '@/lib/constants';
 import { useSound } from '@/lib/useSound';
@@ -38,6 +38,7 @@ function readStored<T>(key: string): T | null {
 export default function GamePage({ params }: GamePageProps) {
   const { roomId } = use(params);
   const isCreate = roomId === 'create';
+  const isTest   = roomId === 'test';
   const router = useRouter();
 
   // The ref is for imperative use inside callbacks; the state copy is what
@@ -118,12 +119,15 @@ export default function GamePage({ params }: GamePageProps) {
   useEffect(() => {
     const stored = isCreate
       ? readStored<StoredJoin & { playerCount: number }>(STORAGE_CREATE)
-      : readStored<StoredJoin>(STORAGE_ROOM(roomId));
+      : isTest
+        ? readStored<StoredJoin & { playerCount: number }>(STORAGE_TEST)
+        : readStored<StoredJoin>(STORAGE_ROOM(roomId));
 
     if (stored?.playerName) { setJoinInfo(stored); setNeedsName(false); }
     else if (isCreate)      { setError('Missing room setup — start again from the lobby.'); setConnecting(false); }
+    else if (isTest)        { setError('Missing test room setup — start again from the lobby.'); setConnecting(false); }
     else                    { setNeedsName(true); setConnecting(false); }
-  }, [isCreate, roomId]);
+  }, [isCreate, isTest, roomId]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // ── Socket lifecycle ────────────────────────────────────────────────────
@@ -144,6 +148,11 @@ export default function GamePage({ params }: GamePageProps) {
           playerName: joinInfo.playerName,
           playerCount: joinInfo.playerCount ?? 4,
           password: joinInfo.password ?? '',
+        });
+      } else if (isTest) {
+        socket.emit('create_test_room', {
+          playerName: joinInfo.playerName,
+          playerCount: (joinInfo as StoredJoin & { playerCount?: number }).playerCount ?? 4,
         });
       } else {
         socket.emit('join_room', {
@@ -320,7 +329,7 @@ export default function GamePage({ params }: GamePageProps) {
     socket.on('disconnect', () => { setRolling(false); setForcedMove(null); });
 
     return () => { socket.disconnect(); socketRef.current = null; setSocket(null); };
-  }, [joinInfo, isCreate, roomId, toast]);
+  }, [joinInfo, isCreate, isTest, roomId, toast]);
 
   useEffect(() => () => { if (rollTimerRef.current) clearTimeout(rollTimerRef.current); }, []);
 
@@ -457,6 +466,14 @@ export default function GamePage({ params }: GamePageProps) {
         <div className={styles.roomInfo}>
           <span className={styles.roomLabel}>ROOM</span>
           <span className={`${styles.roomCode} font-orbitron`} data-testid="room-code">{roomCode}</span>
+          {isTest && (
+            <span style={{
+              fontSize: '0.55rem', fontFamily: 'Orbitron, monospace', letterSpacing: '0.1em',
+              color: '#39ff14', background: 'rgba(57,255,20,0.12)',
+              border: '1px solid rgba(57,255,20,0.4)', borderRadius: '10px',
+              padding: '2px 7px', marginLeft: 4, boxShadow: '0 0 8px rgba(57,255,20,0.3)',
+            }}>TEST</span>
+          )}
         </div>
 
         <div className={styles.turnInfo}>
@@ -470,7 +487,7 @@ export default function GamePage({ params }: GamePageProps) {
               ? `👑 Spectating — finished #${myPlayer.finishRank}`
               : isMyTurn
                 ? '⚡ Your Turn'
-                : `${current?.name ?? '…'}'s Turn`}
+                : `${current?.isAuto ? '🤖 ' : ''}${current?.name ?? '…'}'s Turn`}
           </span>
         </div>
 

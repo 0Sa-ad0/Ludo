@@ -42,6 +42,7 @@ export const WALK_MAX_MS      = 2_500;
 
 // ─── Storage keys ────────────────────────────────────────────────────────────
 export const STORAGE_CREATE = 'ludo_create';
+export const STORAGE_TEST   = 'ludo_test';
 export const STORAGE_ROOM   = (code: string) => `ludo_room_${code}`;
 export const STORAGE_MUTED  = 'ludo_muted';
 export const STORAGE_NAME   = 'ludo_name';
