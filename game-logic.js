@@ -137,11 +137,14 @@ function clearDice(state) {
 
 /**
  * End the current player's go without moving anything — used when a roll
- * produces no legal move. A 6 keeps the turn (the bonus roll still applies,
- * as it does on the physical board).
+ * produces no legal move at all, for any piece. Always passes the turn on,
+ * even for a 6: a 6 only bonus-rerolls when it was actually usable — if
+ * nothing could be released and nothing else avoids overshooting (e.g. the
+ * only piece left is in the home stretch needing less than 6), it's treated
+ * the same as any other dead roll.
  */
-function skipTurn(state, playerIndex, diceValue) {
-  if (diceValue !== 6) advanceTurn(state, playerIndex);
+function skipTurn(state, playerIndex) {
+  advanceTurn(state, playerIndex);
   return clearDice(state);
 }
 

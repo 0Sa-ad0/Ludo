@@ -538,16 +538,36 @@ describe('advanceTurn / skipTurn', () => {
   test('skipTurn passes the turn on a non-6 and clears the dice', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
     state.diceValue = 3; state.diceRolled = true;
-    skipTurn(state, 0, 3);
+    skipTurn(state, 0);
     expect(state.currentPlayerIndex).toBe(1);
     expect(state.diceRolled).toBe(false);
     expect(state.diceValue).toBeNull();
   });
 
-  test('skipTurn on a 6 keeps the turn (the bonus roll still applies)', () => {
+  // A 6 only bonus-rerolls when it was actually usable — server.js only
+  // calls skipTurn when getValidMoves comes back empty, meaning the 6
+  // couldn't release anything and everything else would overshoot (e.g.
+  // the only piece left needs less than 6 to finish). Treated exactly like
+  // any other dead roll: the turn passes.
+  test('skipTurn passes the turn even on a 6, when it had no legal move', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    skipTurn(state, 0, 6);
-    expect(state.currentPlayerIndex).toBe(0);
+    skipTurn(state, 0);
+    expect(state.currentPlayerIndex).toBe(1);
+  });
+
+  // The exact reported scenario: only one piece left, sitting in the home
+  // stretch needing less than 6 to finish. A 6 can't release anything
+  // (nothing left at home) and would overshoot the one active piece — zero
+  // legal moves — so it must NOT bonus-reroll, same as rolling e.g. a 5 in
+  // the same spot would not.
+  test('a 6 with the only remaining piece needing less than 6 to finish has no legal move, and does not bonus-reroll', () => {
+    const state = makeState(4, ['A', 'B', 'C', 'D']);
+    const player = state.players[0];
+    player.pieces.forEach((p, i) => { if (i > 0) p.status = 'finished'; });
+    placeActive(state, 0, 0, GOAL_4 - 2); // needs exactly 2 to finish
+    expect(getValidMoves(player, 6, state)).toEqual([]);
+    skipTurn(state, 0);
+    expect(state.currentPlayerIndex).toBe(1); // turn passes, no bonus roll
   });
 });
 

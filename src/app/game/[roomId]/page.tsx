@@ -310,10 +310,9 @@ export default function GamePage({ params }: GamePageProps) {
         const mine = playerIndex === myIndexRef.current;
         const who = mine ? 'You' : (nameOf(playerIndex) ?? 'Player');
 
-        // A 6 keeps the turn, so "skipped" would be wrong — they roll again.
-        const outcome = value === 6
-          ? (mine ? 'Roll again.' : `${who} rolls again.`)
-          : (mine ? 'Your turn was skipped.' : `${who}'s turn was skipped.`);
+        // A dead roll always passes the turn now, even a 6 — it only
+        // bonus-rerolls when it was actually usable.
+        const outcome = mine ? 'Your turn was skipped.' : `${who}'s turn was skipped.`;
         toast(`🎲 ${value} — no legal move. ${outcome}`);
       };
 

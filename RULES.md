@@ -48,7 +48,7 @@ Unused corners/arms are greyed out and labelled EMPTY.
 2. The dice tumbles and settles on 1–6
 3. Move **one** of your pieces forward by that number
 4. You earn a **bonus roll** — same turn, roll again — whenever any of these happen:
-   - You roll a **6**
+   - You roll a **6** — but only if it was actually usable; see point 6
    - You **capture** an opponent's piece
    - A piece of yours **reaches home** (finishes)
 
@@ -62,11 +62,12 @@ Unused corners/arms are greyed out and labelled EMPTY.
    voids the turn — here it's excluded before it can happen at all.) Any
    non-6 resets the streak, even if that roll earned its own bonus via a
    capture or a finish.
-6. If you have **no legal move**, your turn is skipped automatically and everyone
-   is told why (`🎲 4 — no legal move`) — **except** a 6 with no legal move,
-   which still grants the bonus roll rather than skipping (confirmed against
-   Wikipedia's Ludo rules: a 6 bonus-rolls even when it can't obviously be
-   used, such as when there's nothing left to release from the home base)
+6. If you have **no legal move**, your turn is skipped automatically and
+   everyone is told why (`🎲 4 — no legal move`) — **a 6 is no exception**.
+   If it can't release anything from the home base and everything else on
+   the board would overshoot (e.g. your only remaining piece is in the home
+   stretch needing less than 6 to finish), it's a dead roll just like any
+   other and the turn passes with no bonus.
 
 ---
 
