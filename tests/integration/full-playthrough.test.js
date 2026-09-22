@@ -1,16 +1,19 @@
 /**
  * A genuine full game played to completion against the real server.js
  * process over real sockets — not a pure-function simulation. This is the
- * live proof that the bonus-roll rules (capture, finish, roll-a-6) and the
- * three-sixes forfeit are wired correctly through the actual roll_dice /
- * move_piece handlers, not just correct in isolation.
+ * live proof that the bonus-roll rules (capture, finish, roll-a-6) are
+ * wired correctly through the actual roll_dice / move_piece handlers, not
+ * just correct in isolation.
  *
  * Rules verified against https://officialgamerules.org/game-rules/ludo-rules/ :
  *   - capturing an opponent grants a bonus roll (turn does not advance)
  *   - a piece reaching home grants a bonus roll (unless it's the player's last)
  *   - rolling a 6 grants a bonus roll
- *   - three consecutive 6s forfeits the roll — turn passes immediately, with
- *     no window where the still-live roll can be sneaked in as a move
+ *
+ * House rule, NOT from the standard rules above: after two 6s in a row this
+ * turn, the die excludes a third 6 entirely (see rollDie in game-logic.js),
+ * so there is no "three 6s forfeits the turn" scenario to test here — it
+ * can never happen.
  */
 const {
   startServer, stopServer, waitForServer, makeClientFactory, makeRoom,
@@ -45,7 +48,6 @@ test('a full 2-player game, driven turn by turn, obeys every bonus-roll and forf
   const sockets = [host, guests[0]];
 
   let bonusRollChecks = 0;
-  let forfeitChecks = 0;
   let forcedMoveChecks = 0;
   let reactions = 0;
   // Set right before a react() deliberately withholds move_piece because
@@ -135,16 +137,6 @@ test('a full 2-player game, driven turn by turn, obeys every bonus-roll and forf
       });
     });
 
-    // The three-sixes forfeit must hand the turn to the OTHER player, with
-    // no window where the forfeiting roll was still actionable.
-    host.on('turn_skipped', ({ playerIndex, reason }) => {
-      if (reason !== 'three-sixes') return;
-      forfeitChecks++;
-      host.once('game_state', (next) => {
-        expect(next.currentPlayerIndex).not.toBe(playerIndex);
-      });
-    });
-
     host.on('game_over', (rankings) => {
       clearTimeout(overallTimeout);
       clearTimeout(idleTimer);
@@ -155,14 +147,8 @@ test('a full 2-player game, driven turn by turn, obeys every bonus-roll and forf
     });
   });
 
-  console.log(`bonusRollChecks=${bonusRollChecks} forfeitChecks=${forfeitChecks} forcedMoveChecks=${forcedMoveChecks}`);
-  // Three-sixes is a real, if infrequent (~1-in-216-per-roll-sequence),
-  // event over a full 4-piece game. Not asserting it fired — that would
-  // make the test flaky — only that whenever it did, the assertion inside
-  // the listener above already ran and passed (Jest fails the test on any
-  // expect() failure inside a listener, even async ones registered mid-test).
-  void forfeitChecks;
-  // Unlike three-sixes, a single-legal-move roll is common — every finished
+  console.log(`bonusRollChecks=${bonusRollChecks} forcedMoveChecks=${forcedMoveChecks}`);
+  // A single-legal-move roll is common — every finished
   // game passes through positions with only one movable piece — so this one
   // *is* asserted to have actually happened, not just checked when it did.
   expect(forcedMoveChecks).toBeGreaterThan(0);

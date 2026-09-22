@@ -264,8 +264,8 @@ async function playAutomaticTurn(io, roomCode, { abortIfConnected = false } = {}
   };
 
   if (!state.diceRolled) {
-    const value = rollDie();
-    const forfeited = registerRoll(state, value);
+    const value = rollDie(state.sixStreak);
+    registerRoll(state, value);
     state.diceValue  = value;
     state.diceRolled = true;
     touch(state);
@@ -273,22 +273,6 @@ async function playAutomaticTurn(io, roomCode, { abortIfConnected = false } = {}
 
     io.to(roomCode).emit('dice_rolled', { playerIndex: pi, value, isAuto: true });
     broadcastState(io, roomCode, state);
-
-    if (forfeited) {
-      // Same reasoning as the human roll_dice handler: void synchronously,
-      // no sleep — a 6 almost always has a legal move, so pausing here would
-      // leave a window where the player (if they reconnect mid-pause) could
-      // sneak a move in against the still-live roll before the forfeit
-      // takes effect.
-      io.to(roomCode).emit('turn_skipped', { playerIndex: pi, value, isAuto: true, reason: 'three-sixes' });
-      advanceTurn(state, pi);
-      clearDice(state);
-      touch(state);
-      bumpTurn(roomCode);
-      broadcastState(io, roomCode, state);
-      await saveGameState(state);
-      return armTurn(io, roomCode);
-    }
 
     await sleep(AUTO_MOVE_DELAY_MS);
     // A human (or another timer) acted while we were waiting — their state wins.
@@ -345,7 +329,7 @@ async function playAutomaticTurn(io, roomCode, { abortIfConnected = false } = {}
 function reindexPlayers(state) {
   state.players.forEach((p, i) => {
     p.slotIndex  = i;
-    p.colorIndex = i;
+    p.colorIndex = state.colorOrder[i];
     p.isHost     = i === 0;
     p.pieces = p.pieces.map((piece, pieceIndex) => ({
       ...piece,
@@ -429,7 +413,7 @@ Promise.all([app.prepare(), initDb()]).then(() => {
       const state = createInitialState(roomCode, count, passwordHash);
       touch(state);
 
-      const player = createPlayer(state.id, name, 0, 0);
+      const player = createPlayer(state.id, name, state.colorOrder[0], 0);
       player.socketId = socket.id;
       player.isConnected = true;
       state.players.push(player);
@@ -509,7 +493,7 @@ Promise.all([app.prepare(), initDb()]).then(() => {
       if (state.players.some((p) => p.name === name)) return fail('That name is already taken in this room');
 
       const slotIndex = state.players.length;
-      const player = createPlayer(state.id, name, slotIndex, slotIndex);
+      const player = createPlayer(state.id, name, state.colorOrder[slotIndex], slotIndex);
       player.socketId    = socket.id;
       player.isConnected = true;
       state.players.push(player);
@@ -587,8 +571,11 @@ Promise.all([app.prepare(), initDb()]).then(() => {
       if (state.diceRolled)                      return;
       if (player.isFinished)                     return;
 
-      const value = rollDie();
-      const forfeited = registerRoll(state, value);
+      // House rule: after two 6s in a row this turn, rollDie excludes a
+      // third 6 entirely (see rollDie) — so a real third 6 can never come
+      // up, and there's nothing here to void or forfeit.
+      const value = rollDie(state.sixStreak);
+      registerRoll(state, value);
       state.diceValue  = value;
       state.diceRolled = true;
       touch(state);
@@ -596,28 +583,6 @@ Promise.all([app.prepare(), initDb()]).then(() => {
 
       io.to(roomCode).emit('dice_rolled', { playerIndex, value });
       broadcastState(io, roomCode, state);
-
-      // Three 6s in a row voids the roll entirely — no move, turn passes
-      // immediately, even though a 6 would otherwise let them act. This is
-      // deliberately NOT delayed like the no-legal-move skip below: a 6
-      // almost always has a legal move sitting there, so pausing here (as
-      // the no-legal-move path safely does, precisely because it has no
-      // legal move to exploit) would leave a real window where a fast
-      // client could sneak `move_piece` in against the still-live roll
-      // before the forfeit takes effect — a genuine way to cheat the rule.
-      // Everything below runs synchronously, in the same tick as the roll
-      // itself, so no other socket event for this room can be processed
-      // in between.
-      if (forfeited) {
-        io.to(roomCode).emit('turn_skipped', { playerIndex, value, isAuto: false, reason: 'three-sixes' });
-        advanceTurn(state, playerIndex);
-        clearDice(state);
-        touch(state);
-        bumpTurn(roomCode);
-        broadcastState(io, roomCode, state);
-        await saveGameState(state);
-        return armTurn(io, roomCode);
-      }
 
       const valid = getValidMoves(player, value, state);
 

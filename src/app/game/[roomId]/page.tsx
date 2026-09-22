@@ -51,6 +51,10 @@ export default function GamePage({ params }: GamePageProps) {
   const [error, setError]             = useState('');
   const [notice, setNotice]           = useState('');
   const [rollingDice, setRolling]     = useState(false);
+  // The dice's displayed value, frozen at reveal time — decoupled from the
+  // live gameState.diceValue, which the server can clear (a skip, a move)
+  // well before the local roll animation's delay is actually up.
+  const [revealedValue, setRevealedValue] = useState<number | null>(null);
   // Box-by-box walk jobs reconstructed from the state just before a move and
   // just after it — see WalkJob. `id` changes on every genuine move so a
   // board's effect can tell a new walk apart from an unrelated re-render.
@@ -87,6 +91,11 @@ export default function GamePage({ params }: GamePageProps) {
 
   const rollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rollStartRef = useRef(0);
+  // Set the instant I tap the dice, cleared once my own dice_rolled comes
+  // back — lets that handler tell "this is confirming MY tap" (keep the
+  // animation already running, timed from the tap) apart from "someone
+  // else's roll just arrived" (start my own tumble now, timed from now).
+  const myRollPendingRef = useRef(false);
 
   const toast = useCallback((msg: string) => {
     setNotice(msg);
@@ -210,16 +219,41 @@ export default function GamePage({ params }: GamePageProps) {
 
     socket.on('dice_rolled', ({ value, isAuto }: DiceRolledPayload) => {
       playRef.current.dice();
+
+      if (isAuto) { setRolling(false); setRevealedValue(value); return; }
+
+      // rollStartRef is only set by MY OWN tap (see handleRoll) — for
+      // everyone else at the table, this broadcast is the first they hear
+      // of the roll, so their tumble has to start now, timed from now.
+      // Without this, only the roller ever saw the animation; everyone else
+      // saw the real number appear instantly, up to DICE_ROLL_MIN_MS before
+      // the roller's own dice finished spinning — a real spoiler.
+      const isMyOwnRoll = myRollPendingRef.current;
+      myRollPendingRef.current = false;
+      if (!isMyOwnRoll) {
+        rollStartRef.current = Date.now();
+        setRolling(true);
+        setRevealedValue(null);
+      }
+
       // Let the tumble finish even when the server answers in 5ms on LAN —
       // stopping it the instant the value arrives meant it never animated.
+      // The value is frozen at reveal time rather than read live off
+      // gameState.diceValue — the server can clear that (a skip, a move)
+      // well before this local delay is up, which would otherwise make the
+      // dice finish spinning onto a blank face instead of the real number.
       const elapsed = Date.now() - rollStartRef.current;
-      const wait = isAuto ? 0 : Math.max(0, DICE_ROLL_MIN_MS - elapsed);
-      setTimeout(() => setRolling(false), wait);
-      void value;
+      const wait = Math.max(0, DICE_ROLL_MIN_MS - elapsed);
+      setTimeout(() => { setRolling(false); setRevealedValue(value); }, wait);
     });
 
     socket.on('piece_moved', ({ pieceId, playerIndex, capturedPieces }: PieceMovedPayload) => {
       setForcedMove(null);
+      // A move always clears the roll server-side (clearDice runs whether or
+      // not it earned a bonus) — the dice should go back to idle rather than
+      // keep showing the number that was just played, whether it's now
+      // someone else's turn or this same player's bonus re-roll.
+      setRevealedValue(null);
 
       // stateRef.current is still the PRE-move state here — piece_moved is
       // always emitted before the game_state that carries the new positions
@@ -266,23 +300,34 @@ export default function GamePage({ params }: GamePageProps) {
       setForcedMove({ playerName: playerIndex === myIndexRef.current ? 'You' : name, deadline: Date.now() + delayMs });
     });
 
-    socket.on('turn_skipped', ({ playerIndex, value, reason }: TurnSkippedPayload) => {
-      playRef.current.skip();
-      setRolling(false);
+    socket.on('turn_skipped', ({ playerIndex, value, isAuto }: TurnSkippedPayload) => {
       setForcedMove(null);
-      const mine = playerIndex === myIndexRef.current;
-      const who = mine ? 'You' : (nameOf(playerIndex) ?? 'Player');
 
-      if (reason === 'three-sixes') {
-        toast(`🎲🎲🎲 Three 6s in a row — ${mine ? 'your' : `${who}'s`} turn is forfeited!`);
-        return;
-      }
+      const reveal = () => {
+        playRef.current.skip();
+        setRolling(false);
+        setRevealedValue(value);
+        const mine = playerIndex === myIndexRef.current;
+        const who = mine ? 'You' : (nameOf(playerIndex) ?? 'Player');
 
-      // A 6 keeps the turn, so "skipped" would be wrong — they roll again.
-      const outcome = value === 6
-        ? (mine ? 'Roll again.' : `${who} rolls again.`)
-        : (mine ? 'Your turn was skipped.' : `${who}'s turn was skipped.`);
-      toast(`🎲 ${value} — no legal move. ${outcome}`);
+        // A 6 keeps the turn, so "skipped" would be wrong — they roll again.
+        const outcome = value === 6
+          ? (mine ? 'Roll again.' : `${who} rolls again.`)
+          : (mine ? 'Your turn was skipped.' : `${who}'s turn was skipped.`);
+        toast(`🎲 ${value} — no legal move. ${outcome}`);
+      };
+
+      if (isAuto) { reveal(); return; }
+
+      // The server can emit this within milliseconds of dice_rolled (it
+      // decides "no legal move" instantly, only the STATE change is
+      // delayed) — well before anyone's local dice animation has actually
+      // finished. Revealing right away would both cut the animation short
+      // AND spoil the number via this toast, for the roller and everyone
+      // else alike. Wait for the same deadline dice_rolled already set.
+      const elapsed = Date.now() - rollStartRef.current;
+      const wait = Math.max(0, DICE_ROLL_MIN_MS - elapsed);
+      setTimeout(reveal, wait);
     });
 
     socket.on('player_left', (i) => {
@@ -314,10 +359,15 @@ export default function GamePage({ params }: GamePageProps) {
       }
       setError(msg);
       setRolling(false);
+      myRollPendingRef.current = false;
       setTimeout(() => setError((e) => (e === msg ? '' : e)), 4000);
     });
 
-    socket.on('disconnect', () => { setRolling(false); setForcedMove(null); });
+    socket.on('disconnect', () => {
+      setRolling(false);
+      setForcedMove(null);
+      myRollPendingRef.current = false;
+    });
 
     return () => { socket.disconnect(); socketRef.current = null; setSocket(null); };
   }, [joinInfo, isCreate, roomId, toast]);
@@ -349,13 +399,20 @@ export default function GamePage({ params }: GamePageProps) {
   const handleRoll = useCallback(() => {
     const socket = socketRef.current;
     if (!socket || !isMyTurn || gameState?.diceRolled || rollingDice) return;
+    myRollPendingRef.current = true;
     rollStartRef.current = Date.now();
     setRolling(true);
+    setRevealedValue(null);
     socket.emit('roll_dice');
     // If the roll is never answered (rejected, or the socket dropped), don't
-    // leave the button spinning for ever.
+    // leave the button spinning for ever — and don't leave the pending flag
+    // set either, or a later roll from someone ELSE would be mistaken for
+    // confirmation of this abandoned one and skip starting its own tumble.
     if (rollTimerRef.current) clearTimeout(rollTimerRef.current);
-    rollTimerRef.current = setTimeout(() => setRolling(false), ROLL_TIMEOUT_MS);
+    rollTimerRef.current = setTimeout(() => {
+      setRolling(false);
+      myRollPendingRef.current = false;
+    }, ROLL_TIMEOUT_MS);
   }, [isMyTurn, gameState?.diceRolled, rollingDice]);
 
   const handleMove = useCallback((pieceId: string) => {
@@ -511,7 +568,7 @@ export default function GamePage({ params }: GamePageProps) {
 
       <div className={styles.diceArea}>
         <DiceRoller
-          value={gameState.diceValue}
+          value={revealedValue}
           rolling={rollingDice}
           canRoll={!!isMyTurn && !gameState.diceRolled && !myPlayer?.isFinished}
           waitingForMove={!!isMyTurn && gameState.diceRolled}

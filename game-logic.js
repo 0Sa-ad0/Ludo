@@ -24,6 +24,19 @@ function generateRoomCode() {
   return code;
 }
 
+/** Fisher-Yates. Used to pick which of the 6 player colors lands on which
+ *  seat, per room — so hosting never deterministically hands out the same
+ *  color every time (it used to just be colorIndex = slotIndex, meaning the
+ *  host always got color 0 and every room looked the same). */
+function shuffled(array) {
+  const a = array.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 function createInitialState(roomCode, playerCount, passwordHash) {
   return {
     id:                   uuidv4(),
@@ -40,6 +53,8 @@ function createInitialState(roomCode, playerCount, passwordHash) {
     winner:               null,
     rankings:             [],
     createdAt:            Date.now(),
+    // Which color a seat gets, randomized once per room — see shuffled().
+    colorOrder:           shuffled(Array.from({ length: MAX_PLAYERS }, (_, i) => i)),
   };
 }
 
@@ -103,18 +118,14 @@ function advanceTurn(state, fromIndex) {
 /**
  * Track consecutive 6s within one player's unbroken run of rolls (bonus
  * rolls chain the same turn together; any non-6 breaks the streak even if
- * it earns its own bonus via a capture or a finish). Confirmed against
- * officialgamerules.org: "roll three sixes in a row, you lose your turn" —
- * the third 6 is void, no move, turn passes immediately. Mutates
- * state.sixStreak. Returns true when THIS roll must be forfeited.
+ * it earns its own bonus via a capture or a finish). This is what rollDie
+ * consults to keep a third 6 in a row from ever coming up — a deliberate
+ * house rule for this game, not the traditional "three 6s forfeits the
+ * turn" rule (which needs a real third 6 to actually happen). Mutates
+ * state.sixStreak.
  */
 function registerRoll(state, diceValue) {
   state.sixStreak = diceValue === 6 ? (state.sixStreak || 0) + 1 : 0;
-  if (state.sixStreak >= 3) {
-    state.sixStreak = 0;
-    return true;
-  }
-  return false;
 }
 
 /** Clear the roll so the next player starts from a clean slate. Mutates. */
@@ -241,9 +252,15 @@ function pickAutoMove(player, diceValue, state) {
   return valid[Math.floor(Math.random() * valid.length)];
 }
 
-/** A fair six-sided die. Kept here so tests can stub one place. */
-function rollDie() {
-  return Math.floor(Math.random() * 6) + 1;
+/**
+ * A six-sided die — EXCEPT after two 6s in a row this turn, where a third
+ * would be excluded: house rule, so the die draws from 1-5 instead. Pass the
+ * player's current sixStreak (before this roll) to apply it.
+ * @param {number} sixStreak
+ */
+function rollDie(sixStreak = 0) {
+  const faces = sixStreak >= 2 ? 5 : 6;
+  return Math.floor(Math.random() * faces) + 1;
 }
 
 module.exports = {

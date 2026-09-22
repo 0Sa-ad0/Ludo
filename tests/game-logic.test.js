@@ -2,7 +2,7 @@ const {
   createInitialState, createPlayer, sanitizeState,
   getValidMoves, applyMove, pathToTrack, getStartSq, getTrackLen,
   getLoopLen, getGoalPos, getHomeEntrance, isOnTrack, isValidPlayerCount,
-  advanceTurn, skipTurn, finalizeIfOver, registerRoll, clearDice,
+  advanceTurn, skipTurn, finalizeIfOver, registerRoll, rollDie,
   pickAutoMove, generateRoomCode,
 } = require('../game-logic');
 
@@ -552,33 +552,27 @@ describe('advanceTurn / skipTurn', () => {
 });
 
 // ─── Three sixes in a row ───────────────────────────────────────────────────
-// Confirmed against officialgamerules.org: "roll three sixes in a row, you
-// lose your turn." The third 6 is void — no move, turn passes immediately.
+// House rule: after two 6s in a row this turn, rollDie excludes a third 6
+// entirely — so a real third 6 can never come up. (Not the traditional
+// "three 6s forfeits your turn" rule, which needs a genuine third 6 to ever
+// fire; that's deliberately not implemented here.)
 
-describe('registerRoll — three-sixes forfeit', () => {
-  test('the first two 6s are not a forfeit', () => {
+describe('registerRoll — six-streak tracking', () => {
+  test('counts consecutive 6s', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
-    expect(registerRoll(state, 6)).toBe(false);
+    registerRoll(state, 6);
     expect(state.sixStreak).toBe(1);
-    expect(registerRoll(state, 6)).toBe(false);
+    registerRoll(state, 6);
     expect(state.sixStreak).toBe(2);
-  });
-
-  test('the third consecutive 6 is a forfeit, and resets the streak', () => {
-    const state = makeState(4, ['A', 'B', 'C', 'D']);
-    registerRoll(state, 6);
-    registerRoll(state, 6);
-    expect(registerRoll(state, 6)).toBe(true);
-    expect(state.sixStreak).toBe(0);
   });
 
   test('any non-6 breaks the streak, even mid-chain', () => {
     const state = makeState(4, ['A', 'B', 'C', 'D']);
     registerRoll(state, 6);
-    expect(registerRoll(state, 4)).toBe(false);
+    registerRoll(state, 4);
     expect(state.sixStreak).toBe(0);
     // Streak restarts clean after the break.
-    expect(registerRoll(state, 6)).toBe(false);
+    registerRoll(state, 6);
     expect(state.sixStreak).toBe(1);
   });
 
@@ -600,11 +594,45 @@ describe('registerRoll — three-sixes forfeit', () => {
     state.players[1].pieces[0].status = 'active';
     state.players[1].pieces[0].trackPosition = pathToTrack(14, 0, 4);
     state.players[1].pieces[0].pathPosition = 5;
-    expect(registerRoll(state, 4)).toBe(false);
+    registerRoll(state, 4);
     expect(state.sixStreak).toBe(0);
     const next = applyMove(state, 0, 'p0_piece0', 4);
     expect(next.lastMove.capturedPieces.length).toBeGreaterThan(0);
     expect(next.currentPlayerIndex).toBe(0); // bonus roll from the capture
+  });
+});
+
+describe('rollDie — no third 6 in a row', () => {
+  test('with a fresh or one-6 streak, the full 1-6 range is available', () => {
+    const seen = new Set();
+    for (let i = 0; i < 500; i++) seen.add(rollDie(0));
+    expect(seen.has(6)).toBe(true);
+    const seen1 = new Set();
+    for (let i = 0; i < 500; i++) seen1.add(rollDie(1));
+    expect(seen1.has(6)).toBe(true);
+  });
+
+  test('once the streak is already 2, a third 6 never comes up', () => {
+    for (let i = 0; i < 1000; i++) {
+      expect(rollDie(2)).toBeLessThanOrEqual(5);
+    }
+  });
+
+  test('the full 1-5 range is still reachable once constrained', () => {
+    const seen = new Set();
+    for (let i = 0; i < 1000; i++) seen.add(rollDie(2));
+    expect(seen).toEqual(new Set([1, 2, 3, 4, 5]));
+  });
+
+  test('a genuine three-in-a-row streak is therefore impossible over extended real play', () => {
+    let streak = 0;
+    let maxStreak = 0;
+    for (let i = 0; i < 20000; i++) {
+      const value = rollDie(streak);
+      streak = value === 6 ? streak + 1 : 0;
+      maxStreak = Math.max(maxStreak, streak);
+    }
+    expect(maxStreak).toBeLessThanOrEqual(2);
   });
 });
 
@@ -730,28 +758,21 @@ describe('generateRoomCode', () => {
 // ─── A full game must always terminate ──────────────────────────────────────
 
 describe('simulation', () => {
-  // Mirrors server.js's actual per-roll loop exactly (registerRoll's
-  // three-sixes forfeit included) rather than a simplified stand-in, so this
-  // is a faithful full-game playthrough using the real production logic —
-  // not just applyMove in isolation.
+  // Mirrors server.js's actual per-roll loop exactly (the streak-constrained
+  // rollDie included) rather than a simplified stand-in, so this is a
+  // faithful full-game playthrough using the real production logic — not
+  // just applyMove in isolation.
   test('a fully automatic game always reaches a finished state', () => {
     for (const pc of [2, 3, 4, 5, 6]) {
       const state = makeState(pc, ['A', 'B', 'C', 'D', 'E', 'F'].slice(0, pc));
       let s = state;
       s.status = 'playing';
       let turns = 0;
-      let forfeits = 0;
       while (s.status !== 'finished' && turns < 30000) {
         turns++;
         const pi = s.currentPlayerIndex;
-        const value = Math.floor(Math.random() * 6) + 1;
-
-        if (registerRoll(s, value)) {
-          forfeits++;
-          advanceTurn(s, pi);
-          clearDice(s);
-          continue;
-        }
+        const value = rollDie(s.sixStreak);
+        registerRoll(s, value);
 
         const pieceId = pickAutoMove(s.players[pi], value, s);
         if (pieceId) s = applyMove(s, pi, pieceId, value);
@@ -760,38 +781,7 @@ describe('simulation', () => {
       expect(s.status).toBe('finished');
       expect(s.rankings).toHaveLength(pc);
       expect(new Set(s.rankings).size).toBe(pc); // everyone ranked exactly once
-      expect(forfeits).toBeGreaterThanOrEqual(0); // sanity: loop actually ran the forfeit path when due
     }
-  });
-
-  // Runs enough turns, across enough repetitions, that the 1-in-216 forfeit
-  // chance is all but guaranteed to fire at least once — proving the whole
-  // roll -> forfeit -> advance loop is sound under real repeated use, not
-  // just in the single-shot unit tests above.
-  test('the three-sixes forfeit actually fires during real extended play, and the game still finishes cleanly', () => {
-    let sawForfeit = false;
-    for (let run = 0; run < 10 && !sawForfeit; run++) {
-      const state = makeState(4, ['A', 'B', 'C', 'D']);
-      let s = state;
-      s.status = 'playing';
-      let turns = 0;
-      while (s.status !== 'finished' && turns < 30000) {
-        turns++;
-        const pi = s.currentPlayerIndex;
-        const value = Math.floor(Math.random() * 6) + 1;
-        if (registerRoll(s, value)) {
-          sawForfeit = true;
-          advanceTurn(s, pi);
-          clearDice(s);
-          continue;
-        }
-        const pieceId = pickAutoMove(s.players[pi], value, s);
-        if (pieceId) s = applyMove(s, pi, pieceId, value);
-        else skipTurn(s, pi, value);
-      }
-      expect(s.status).toBe('finished');
-    }
-    expect(sawForfeit).toBe(true);
   });
 });
 

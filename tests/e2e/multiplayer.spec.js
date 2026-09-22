@@ -87,6 +87,57 @@ test.describe('Two-player game flow', () => {
     await guestCtx.close();
   });
 
+  // REGRESSION: the roll animation's timing state (rollStartRef / setRolling)
+  // used to be armed only by the roller's own click handler. Every OTHER
+  // client just received dice_rolled with nothing local ever starting their
+  // tumble, so they saw the real number appear INSTANTLY — up to
+  // DICE_ROLL_MIN_MS before the roller's own dice finished spinning. A real
+  // spoiler: your teammates could know your roll before you did.
+  test('the roll animation is synced — no player sees the value before their own dice finishes spinning', async ({ browser }) => {
+    test.setTimeout(30_000);
+    const hostCtx = await browser.newContext();
+    const guestCtx = await browser.newContext();
+    const host = await hostCtx.newPage();
+    const guest = await guestCtx.newPage();
+
+    await host.goto('/');
+    await clickUntil(host, host.locator('#btn-create-room'), host.locator('#input-create-name'));
+    await host.locator('#input-create-name').fill('Host');
+    await host.locator('#btn-player-count-2').click();
+    await host.locator('#btn-create-confirm').click();
+    const roomCode = (await host.getByTestId('room-code').textContent()).trim();
+
+    await guest.goto('/');
+    await clickUntil(guest, guest.locator('#btn-join-room'), guest.locator('#input-join-name'));
+    await guest.locator('#input-join-name').fill('Guest');
+    await guest.locator('#input-room-code').fill(roomCode);
+    await guest.locator('#btn-join-confirm').click();
+
+    await expect(host.getByTestId('turn-text')).toHaveAttribute('data-my-turn', 'true', { timeout: 10_000 });
+
+    await host.locator('#btn-roll-dice').click();
+
+    // Shortly after the click, BOTH dice must still be mid-animation — value
+    // withheld from everyone, not just the non-roller. This is the crux of
+    // the regression: before the fix, the guest's data-value populated
+    // almost immediately while the host's dice was still spinning.
+    await host.waitForTimeout(400);
+    await expect(host.locator('#btn-roll-dice')).toHaveAttribute('data-rolling', 'true');
+    await expect(guest.locator('#btn-roll-dice')).toHaveAttribute('data-rolling', 'true');
+    await expect(guest.locator('#btn-roll-dice')).toHaveAttribute('data-value', '');
+
+    // Both eventually reveal the SAME real value, once their own animation
+    // has actually finished.
+    await expect(host.locator('#btn-roll-dice')).not.toHaveAttribute('data-value', '', { timeout: 5000 });
+    await expect(guest.locator('#btn-roll-dice')).not.toHaveAttribute('data-value', '', { timeout: 5000 });
+    const hostValue  = await host.locator('#btn-roll-dice').getAttribute('data-value');
+    const guestValue = await guest.locator('#btn-roll-dice').getAttribute('data-value');
+    expect(guestValue).toBe(hostValue);
+
+    await hostCtx.close();
+    await guestCtx.close();
+  });
+
   test('wrong room password is rejected', async ({ browser }) => {
     const hostCtx = await browser.newContext();
     const host = await hostCtx.newPage();

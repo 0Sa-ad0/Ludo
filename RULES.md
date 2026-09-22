@@ -48,19 +48,25 @@ Unused corners/arms are greyed out and labelled EMPTY.
 2. The dice tumbles and settles on 1–6
 3. Move **one** of your pieces forward by that number
 4. You earn a **bonus roll** — same turn, roll again — whenever any of these happen:
-   - You roll a **6** (unlimited consecutive 6s)
+   - You roll a **6**
    - You **capture** an opponent's piece
    - A piece of yours **reaches home** (finishes)
 
    These stack independently but never double up — landing a capture with a
    6, for instance, is still just one bonus roll, exactly like the physical
    game.
-5. **Three 6s in a row forfeits the turn** — the third consecutive 6 is void:
-   no move, turn passes immediately, even though it's a 6. Any non-6 in
-   between resets the streak, even if that roll earned its own bonus via a
+5. **House rule: no three 6s in a row.** After two consecutive 6s in the
+   same turn, the third roll is drawn from 1–5 instead of 1–6 — a genuine
+   third 6 simply can't come up. (This is a deliberate choice for this game,
+   not the traditional rule some rulebooks describe, where a real third 6
+   voids the turn — here it's excluded before it can happen at all.) Any
+   non-6 resets the streak, even if that roll earned its own bonus via a
    capture or a finish.
 6. If you have **no legal move**, your turn is skipped automatically and everyone
-   is told why (`🎲 4 — no legal move`)
+   is told why (`🎲 4 — no legal move`) — **except** a 6 with no legal move,
+   which still grants the bonus roll rather than skipping (confirmed against
+   Wikipedia's Ludo rules: a 6 bonus-rolls even when it can't obviously be
+   used, such as when there's nothing left to release from the home base)
 
 ---
 
