@@ -126,6 +126,54 @@
 .iconBtn:hover { border-color: rgba(255,255,255,0.28); background: rgba(255,255,255,0.06); }
 .iconBtn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 
+/* Host-only mid-game removal menu — the pre-game version lives inside
+   WaitingRoom, but that screen is gone once the game starts, so this is the
+   only place left to reach kick_player for a player who never comes back. */
+.kickMenuWrap { position: relative; }
+.kickMenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 180px;
+  background: var(--bg-card2, #1a1a38);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.kickMenuTitle {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  color: var(--text-dim, rgba(255,255,255,0.5));
+  padding: 4px 6px 2px;
+}
+.kickMenuItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+}
+.kickMenuItem:hover { background: rgba(255,255,255,0.06); }
+.kickMenuRemove {
+  border: 1px solid rgba(255,45,45,0.4);
+  color: #ff6b6b;
+  border-radius: 6px;
+  font-size: 0.65rem;
+  padding: 2px 8px;
+  line-height: 1.6;
+  touch-action: manipulation;
+}
+.kickMenuRemove:hover { background: rgba(255,45,45,0.15); }
+.kickMenuEmpty { padding: 6px 8px; font-size: 0.75rem; color: var(--text-dim, rgba(255,255,255,0.5)); }
+
 /* ─── Play area ────────────────────────────────────────────────────────── */
 .gameArea {
   display: flex;

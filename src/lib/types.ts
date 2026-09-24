@@ -100,6 +100,9 @@ export interface ServerToClientEvents {
   player_left:        (playerIndex: number) => void;
   player_auto:        (playerIndex: number) => void;
   player_reconnected: (playerIndex: number) => void;
+  /** The host removed this player mid-game (they never came back) — distinct
+   *  from `kicked`, which the removed player's own socket gets. */
+  player_kicked:      (playerIndex: number) => void;
   kicked:             () => void;
   dice_rolled:        (payload: DiceRolledPayload) => void;
   piece_moved:        (payload: PieceMovedPayload) => void;

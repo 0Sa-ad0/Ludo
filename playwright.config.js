@@ -38,12 +38,6 @@ module.exports = defineConfig({
       // data — server.js already degrades gracefully to in-memory-only when the
       // configured database can't be reached or doesn't exist.
       DB_NAME: 'ludo_game_e2e_test',
-      // Short grace period so the badge-rendering E2E tests run in seconds,
-      // not the real 30s production value. The precise "reconnect cancels
-      // the pending AUTO flip" timing guarantee is covered by the dedicated
-      // socket-level integration test instead (see tests/integration/), not
-      // here — see the comment in tests/e2e/reconnect.spec.js for why.
-      RECONNECT_GRACE_MS: '4000',
     },
   },
 });

@@ -9,12 +9,30 @@ const {
 
 const PORT = 4447;
 
+/**
+ * Roll dice from `roller` until the turn actually leaves them for `nextSlot`.
+ * With every piece still in the yard, only a 6 has a legal move — and a 6
+ * earns a bonus roll, so it keeps the turn right where it is. Everything else
+ * is a dead roll that hands the turn on. Retried rather than asserted on the
+ * first try since the die is genuinely random; a stall this long across many
+ * rolls is astronomically unlikely, not a real failure mode.
+ */
+async function advanceTurnTo(roller, watcher, nextSlot) {
+  for (let attempt = 0; attempt < 25; attempt++) {
+    const next = waitForState(watcher, (s) => s.currentPlayerIndex === nextSlot || s.diceRolled === false);
+    roller.emit('roll_dice');
+    const state = await next;
+    if (state.currentPlayerIndex === nextSlot) return state;
+  }
+  throw new Error(`turn never advanced to slot ${nextSlot}`);
+}
+
 let serverProcess;
 let connect, closeAll;
 
 beforeAll(async () => {
   serverProcess = startServer(PORT, {
-    RECONNECT_GRACE_MS: '400',
+    LOBBY_RECONNECT_GRACE_MS: '400',
     AUTO_MOVE_DELAY_MS: '150',
     SKIP_NOTICE_MS:     '150',
   });
@@ -142,6 +160,80 @@ describe('host controls', () => {
     guests[0].emit('kick_player', { slotIndex: 0 });
     expect(await err).toMatch(/only the host/i);
   }, 15000);
+
+  test('the host cannot remove themselves', async () => {
+    const { host } = await makeRoom(connect, { playerCount: 2, names: ['H5', 'G8'] });
+    const err = waitForEvent(host, 'error');
+    host.emit('kick_player', { slotIndex: 0 });
+    expect(await err).toMatch(/cannot remove yourself/i);
+  }, 15000);
+
+  // Mid-game a seat can't be renumbered out like in the lobby — every other
+  // player's slot, pieces and colour are keyed by index. Removing someone
+  // instead forfeits them: their pieces freeze where they are, they're
+  // skipped from the turn order for good, and the game keeps going for
+  // everyone else. This is the safety valve for "always wait, never bot" —
+  // if a player is genuinely never coming back, the host has to be the one
+  // who moves the game on.
+  test('the host can remove a player mid-game — they forfeit, the game continues', async () => {
+    const { host, guests } = await makeRoom(connect, { playerCount: 3, names: ['H6', 'G9', 'G10'] });
+
+    const kickedEvent  = waitForEvent(guests[1], 'kicked'); // G10, slot 2
+    const notified     = waitForEvent(host, 'player_kicked');
+    const settled      = waitForState(host, (s) => s.players[2].isFinished);
+
+    host.emit('kick_player', { slotIndex: 2 });
+
+    await kickedEvent;
+    expect(await notified).toBe(2);
+
+    const state = await settled;
+    expect(state.status).toBe('playing');
+    expect(state.players).toHaveLength(3); // still there, just out — not spliced
+    expect(state.players[2].isFinished).toBe(true);
+    // Not ranked yet — a forfeit only gets placed into `rankings` once the
+    // game actually ends (see finalizeIfOver), so an early kick can never
+    // outrank someone who goes on to genuinely finish the race.
+    expect(state.players[2].finishRank).toBeNull();
+    expect(state.rankings).toEqual([]);
+    // The other two are untouched and the game is still live for them.
+    expect(state.players[0].isFinished).toBe(false);
+    expect(state.players[1].isFinished).toBe(false);
+  }, 15000);
+
+  test('removing the player whose turn it currently is hands the turn on immediately', async () => {
+    const { host, guests } = await makeRoom(connect, { playerCount: 3, names: ['H7', 'G11', 'G12'] });
+    // The host can't kick themselves, so to test removing whoever currently
+    // holds the turn, the turn first has to actually leave the host (slot 0,
+    // who always goes first).
+    await advanceTurnTo(host, host, 1);
+
+    const settled = waitForState(guests[1], (s) => s.players[1].isFinished);
+    host.emit('kick_player', { slotIndex: 1 });
+    // The kicked player's own socket leaves the room, so watch through the
+    // guest who's still in it.
+    const state = await settled;
+    expect(state.currentPlayerIndex).toBe(2);
+  }, 20000);
+
+  test('kicking down to the last real player finishes the game', async () => {
+    const { host } = await makeRoom(connect, { playerCount: 2, names: ['H8', 'G13'] });
+    // The kicked player's socket leaves the room before game_over is
+    // broadcast, so watch through the host, who stays.
+    const over = waitForEvent(host, 'game_over');
+    host.emit('kick_player', { slotIndex: 1 });
+    const rankings = await over;
+    expect(rankings).toHaveLength(2);
+    expect(rankings[0]).toBe(0); // the remaining player (host) is awarded the win
+    expect(rankings[1]).toBe(1); // the kicked player ranks last
+  }, 15000);
+
+  test('a non-host cannot remove anyone mid-game either', async () => {
+    const { guests } = await makeRoom(connect, { playerCount: 2, names: ['H9', 'G13'] });
+    const err = waitForEvent(guests[0], 'error');
+    guests[0].emit('kick_player', { slotIndex: 0 });
+    expect(await err).toMatch(/only the host/i);
+  }, 15000);
 });
 
 // ─── Turn flow ──────────────────────────────────────────────────────────────
@@ -159,21 +251,18 @@ describe('turn flow', () => {
     expect(autoRolled).toBe(false);
   }, 15000);
 
-  // The safety net that DOES still exist: a genuinely dropped connection
-  // (not just a slow one) still eventually gets its turn played for it, so
-  // one dead phone can't freeze the room for the other three forever. Drop
-  // the player whose turn it currently is (slot 0, at game start) and watch
-  // through the OTHER socket, since the dropped one obviously can't observe
-  // its own disconnect.
-  test('a disconnected player is flipped to AUTO and their turn gets played', async () => {
+  // An involuntary drop (WiFi blip, IP change, phone locking) mid-game never
+  // hands the seat to AUTO on its own — the game just waits, however long it
+  // takes, for the real person to come back. Drop the player whose turn it
+  // currently is (slot 0, at game start) and watch through the OTHER socket,
+  // since the dropped one obviously can't observe its own disconnect.
+  test('a disconnected player is never flipped to AUTO — the game just waits', async () => {
     const { host, guests } = await makeRoom(connect, { names: ['Dropped', 'Stayer'] });
-    const auto = waitForEvent(guests[0], 'player_auto');
+    let sawAuto = false;
+    guests[0].on('player_auto', () => { sawAuto = true; });
     host.disconnect();
-    expect(await auto).toBe(0);
-
-    const rolled = await waitForEvent(guests[0], 'dice_rolled');
-    expect(rolled.playerIndex).toBe(0);
-    expect(rolled.isAuto).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    expect(sawAuto).toBe(false);
   }, 15000);
 
   test('a player who leaves mid-game is handed to AUTO without renumbering seats', async () => {

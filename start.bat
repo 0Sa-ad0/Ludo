@@ -17,13 +17,17 @@ REM Start the game server
 echo  [2/3] Starting Ludo Game Server on port 4000...
 echo.
 
+REM Fixed free ngrok domain, so the link never changes between restarts.
+REM Get your own at https://dashboard.ngrok.com -> Domains (one free per account).
+set NGROK_DOMAIN=staring-boil-widen.ngrok-free.dev
+
 REM Start ngrok in a separate window (if installed)
 where ngrok >nul 2>&1
 if %ERRORLEVEL% == 0 (
     echo  [3/3] Starting ngrok tunnel...
-    start "ngrok" cmd /k "ngrok http 4000"
+    start "ngrok" cmd /k "ngrok http 4000 --domain %NGROK_DOMAIN%"
     timeout /t 3 /nobreak >nul
-    echo  ngrok started! Check the ngrok window for your public URL.
+    echo  ngrok started at https://%NGROK_DOMAIN%
     echo  The public URL will also appear inside the game.
 ) else (
     echo  [3/3] ngrok not found - only local WiFi available.

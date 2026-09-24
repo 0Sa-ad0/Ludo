@@ -10,6 +10,10 @@ interface Props {
   gameState: GameState;
   roomCode: string;
   shareUrl: string;
+  /** A second link built on the host's mDNS hostname instead of its raw LAN
+   *  IP — keeps working if that IP changes later, on devices that support
+   *  it. Empty string when unavailable. */
+  stableUrl: string;
   myPlayerIndex: number;
   onStart: () => void;
   onKick: (slotIndex: number) => void;
@@ -17,9 +21,9 @@ interface Props {
 }
 
 export default function WaitingRoom({
-  gameState, roomCode, shareUrl, myPlayerIndex, onStart, onKick, onLeave,
+  gameState, roomCode, shareUrl, stableUrl, myPlayerIndex, onStart, onKick, onLeave,
 }: Props) {
-  const [copied, setCopied] = useState<'code' | 'url' | null>(null);
+  const [copied, setCopied] = useState<'code' | 'url' | 'stable' | null>(null);
 
   const me     = gameState.players[myPlayerIndex];
   const isHost = !!me?.isHost;
@@ -46,7 +50,7 @@ export default function WaitingRoom({
     return ok;
   }
 
-  async function copy(text: string, which: 'code' | 'url') {
+  async function copy(text: string, which: 'code' | 'url' | 'stable') {
     let ok = false;
     if (navigator.clipboard) {
       try { await navigator.clipboard.writeText(text); ok = true; } catch { ok = false; }
@@ -81,6 +85,17 @@ export default function WaitingRoom({
             <button className="btn btn-ghost" onClick={() => copy(shareUrl, 'url')}
               id="btn-copy-url" aria-label="Copy share link">
               {copied === 'url' ? '✓' : '📋'}
+            </button>
+          </div>
+        )}
+
+        {stableUrl && (
+          <div className={styles.urlBox} title="Keeps working even if the host's network address changes later — needs the joining device to support mDNS, which most phones and computers do.">
+            <span className={styles.urlLabel}>If That Stops Working</span>
+            <span className={styles.url} title={stableUrl}>{stableUrl}</span>
+            <button className="btn btn-ghost" onClick={() => copy(stableUrl, 'stable')}
+              id="btn-copy-stable-url" aria-label="Copy stable share link">
+              {copied === 'stable' ? '✓' : '📋'}
             </button>
           </div>
         )}

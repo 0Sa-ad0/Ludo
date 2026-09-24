@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ludo 5-Player Board — Design Preview (TEMP, not wired into the game)</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <header class="topbar">
+    <h1>Ludo Board — Player Count Preview</h1>
+    <p class="note">Throwaway design mockup only. Not connected to the real game/server code.</p>
+  </header>
+
+  <div class="layout">
+    <aside class="panel">
+      <h2>Controls</h2>
+
+      <div class="field">
+        <label>Player count</label>
+        <div class="segmented" id="playerCountToggle">
+          <button data-count="4">4 (classic)</button>
+          <button data-count="5" class="active">5 (new)</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Player colors</label>
+        <div id="colorInputs" class="colorGrid"></div>
+      </div>
+
+      <div class="field">
+        <label><input type="checkbox" id="showLabels" checked /> Show player labels</label>
+      </div>
+      <div class="field">
+        <label><input type="checkbox" id="showPieces" checked /> Show pieces in home</label>
+      </div>
+
+      <button id="resetColors" class="secondaryBtn">Reset colors</button>
+
+      <div class="callout">
+        <strong>Why this matters:</strong> the real game currently hardcodes 4 slots
+        (colors, board geometry, turn order, kick/forfeit ranking). Going to 5 players
+        touches board layout, slot indexing, and win/forfeit logic — this mockup is just
+        for agreeing on the shape/colors before any of that gets built.
+      </div>
+    </aside>
+
+    <main class="stage">
+      <svg id="board" viewBox="0 0 800 800" xmlns="http://www.w3.org/2000/svg"></svg>
+    </main>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>

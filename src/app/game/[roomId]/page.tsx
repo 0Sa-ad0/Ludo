@@ -69,6 +69,14 @@ export default function GamePage({ params }: GamePageProps) {
   const [forcedMove, setForcedMove] = useState<{ playerName: string; deadline: number } | null>(null);
   const [connecting, setConnecting]   = useState(true);
   const [kicked, setKicked]           = useState(false);
+  const [showKickMenu, setShowKickMenu] = useState(false);
+  // True once a disconnect has lasted long enough that it's no longer just a
+  // brief reconnect blip socket.io is quietly retrying — at that point the
+  // spinner alone is actively misleading, since it looks identical whether
+  // reconnection is seconds away or the server address changed and it will
+  // never succeed on its own.
+  const [lostConnection, setLostConnection] = useState(false);
+  const lostConnectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Opening a shared /game/CODE link has no stored name, so ask for one
   // instead of silently joining the room as "undefined".
   const [needsName, setNeedsName]     = useState(false);
@@ -82,12 +90,14 @@ export default function GamePage({ params }: GamePageProps) {
   // Socket handlers are registered once, so they read the moving parts through
   // refs rather than closing over a stale render's values. The refs are
   // updated in effects, never during render.
-  const playRef    = useRef(play);
-  const stateRef   = useRef<GameState | null>(null);
-  const myIndexRef = useRef(-1);
+  const playRef     = useRef(play);
+  const stateRef    = useRef<GameState | null>(null);
+  const myIndexRef  = useRef(-1);
+  const roomCodeRef = useRef(roomCode);
 
   useEffect(() => { playRef.current = play; }, [play]);
   useEffect(() => { myIndexRef.current = myPlayerIndex; }, [myPlayerIndex]);
+  useEffect(() => { roomCodeRef.current = roomCode; }, [roomCode]);
 
   const rollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rollStartRef = useRef(0);
@@ -111,13 +121,13 @@ export default function GamePage({ params }: GamePageProps) {
   // then the server's own LAN-advertised address (fixes the localhost case),
   // then finally the page's own origin (already correct if opened via LAN IP
   // or ngrok's forwarded domain).
-  const [publicBase, setPublicBase] = useState<{ url: string | null; lanUrl: string | null }>({
-    url: null, lanUrl: null,
+  const [publicBase, setPublicBase] = useState<{ url: string | null; lanUrl: string | null; mdnsUrl: string | null }>({
+    url: null, lanUrl: null, mdnsUrl: null,
   });
   useEffect(() => {
     fetch('/api/public-url')
       .then((r) => r.json())
-      .then((d) => setPublicBase({ url: d.url ?? null, lanUrl: d.lanUrl ?? null }))
+      .then((d) => setPublicBase({ url: d.url ?? null, lanUrl: d.lanUrl ?? null, mdnsUrl: d.mdnsUrl ?? null }))
       .catch(() => {});
   }, []);
 
@@ -148,7 +158,15 @@ export default function GamePage({ params }: GamePageProps) {
 
     socket.on('connect', () => {
       setConnecting(false);
-      if (isCreate) {
+      if (lostConnectionTimerRef.current) { clearTimeout(lostConnectionTimerRef.current); lostConnectionTimerRef.current = null; }
+      setLostConnection(false);
+      // This fires on every reconnect too (a WiFi blip, not just the first
+      // load) — so `isCreate` alone isn't enough to decide what to do. Once
+      // room_created has actually given us a real code, a later reconnect
+      // must rejoin THAT room, or the creator would spin up a brand new,
+      // empty one and strand everyone who already had the real link.
+      const knownRoomCode = roomCodeRef.current;
+      if (isCreate && !knownRoomCode) {
         socket.emit('create_room', {
           playerName: joinInfo.playerName,
           playerCount: joinInfo.playerCount ?? 4,
@@ -156,7 +174,7 @@ export default function GamePage({ params }: GamePageProps) {
         });
       } else {
         socket.emit('join_room', {
-          roomCode: roomId,
+          roomCode: knownRoomCode || roomId,
           playerName: joinInfo.playerName,
           password: joinInfo.password ?? '',
         });
@@ -341,6 +359,10 @@ export default function GamePage({ params }: GamePageProps) {
       const name = nameOf(i);
       if (name) toast(`${name} is back ✅`);
     });
+    socket.on('player_kicked', (i) => {
+      const name = nameOf(i);
+      if (name) toast(`${name} was removed by the host 🚫`);
+    });
 
     socket.on('game_over', () => playRef.current.win());
     socket.on('kicked', () => { setKicked(true); socket.disconnect(); });
@@ -366,12 +388,30 @@ export default function GamePage({ params }: GamePageProps) {
       setRolling(false);
       setForcedMove(null);
       myRollPendingRef.current = false;
+      // Give socket.io's own automatic reconnect a real chance first — most
+      // drops resolve in a second or two and shouldn't alarm anyone. Past
+      // this, it's worth telling the player plainly what's likely wrong
+      // instead of leaving them staring at an unexplained spinner.
+      if (lostConnectionTimerRef.current) clearTimeout(lostConnectionTimerRef.current);
+      lostConnectionTimerRef.current = setTimeout(() => setLostConnection(true), 8000);
     });
 
-    return () => { socket.disconnect(); socketRef.current = null; setSocket(null); };
+    return () => {
+      if (lostConnectionTimerRef.current) clearTimeout(lostConnectionTimerRef.current);
+      socket.disconnect(); socketRef.current = null; setSocket(null);
+    };
   }, [joinInfo, isCreate, roomId, toast]);
 
   useEffect(() => () => { if (rollTimerRef.current) clearTimeout(rollTimerRef.current); }, []);
+
+  // Built from whatever /api/public-url last answered while still connected
+  // — if the connection is down right now, fetching a fresh answer from the
+  // same dead origin obviously wouldn't work either, so this relies on the
+  // cached value from before the drop.
+  const lostConnectionHint = lostConnection
+    ? `Can't reach the server. If the host's network address changed, ask them for the new link`
+      + (publicBase.mdnsUrl ? `, or try ${publicBase.mdnsUrl}` : '') + '.'
+    : null;
 
   // ── Derived ─────────────────────────────────────────────────────────────
   const shareUrl = useMemo(() => {
@@ -386,6 +426,17 @@ export default function GamePage({ params }: GamePageProps) {
     }
     return `${base}/game/${code}`;
   }, [roomCode, roomId, isCreate, publicBase]);
+
+  // A second link, alongside shareUrl, built on the mDNS hostname instead of
+  // the raw LAN IP — it keeps resolving to whatever the current address
+  // actually is, so it survives the host's IP changing later. Not every
+  // device supports mDNS, which is why this is offered as a fallback rather
+  // than replacing shareUrl outright.
+  const stableUrl = useMemo(() => {
+    const code = roomCode || (isCreate ? '' : roomId);
+    if (!code || !publicBase.mdnsUrl) return '';
+    return `${publicBase.mdnsUrl}/game/${code}`;
+  }, [roomCode, roomId, isCreate, publicBase.mdnsUrl]);
 
   const myPlayer  = gameState?.players[myPlayerIndex];
   const isMyTurn  = gameState?.status === 'playing' && gameState.currentPlayerIndex === myPlayerIndex;
@@ -445,7 +496,7 @@ export default function GamePage({ params }: GamePageProps) {
   // ── Screens ─────────────────────────────────────────────────────────────
   if (kicked) {
     return (
-      <Shell socket={socket}>
+      <Shell socket={socket} lostConnectionHint={lostConnectionHint}>
         <div className={styles.message}>
           <h2 className="font-orbitron">Removed from room</h2>
           <p>The host removed you from this game.</p>
@@ -457,7 +508,7 @@ export default function GamePage({ params }: GamePageProps) {
 
   if (needsName) {
     return (
-      <Shell socket={socket}>
+      <Shell socket={socket} lostConnectionHint={lostConnectionHint}>
         <JoinPrompt roomCode={roomId} onSubmit={handleNameSubmit} errorMessage={joinError} />
       </Shell>
     );
@@ -465,7 +516,7 @@ export default function GamePage({ params }: GamePageProps) {
 
   if (connecting || (!gameState && !error)) {
     return (
-      <Shell socket={socket}>
+      <Shell socket={socket} lostConnectionHint={lostConnectionHint}>
         <div className={styles.connectingText}>
           <div className={styles.spinner} />
           <span className="font-orbitron">{connecting ? 'Connecting…' : 'Loading…'}</span>
@@ -476,7 +527,7 @@ export default function GamePage({ params }: GamePageProps) {
 
   if (!gameState) {
     return (
-      <Shell socket={socket}>
+      <Shell socket={socket} lostConnectionHint={lostConnectionHint}>
         <div className={styles.message}>
           <div className={styles.errorBox} data-testid="error-banner">{error}</div>
           <Link href="/" className="btn btn-secondary">← Back to Lobby</Link>
@@ -487,12 +538,13 @@ export default function GamePage({ params }: GamePageProps) {
 
   if (gameState.status === 'waiting') {
     return (
-      <Shell socket={socket}>
+      <Shell socket={socket} lostConnectionHint={lostConnectionHint}>
         {error && <div className={styles.errorBanner} data-testid="error-banner">{error}</div>}
         <WaitingRoom
           gameState={gameState}
           roomCode={roomCode}
           shareUrl={shareUrl}
+          stableUrl={stableUrl}
           myPlayerIndex={myPlayerIndex}
           onStart={handleStart}
           onKick={handleKick}
@@ -506,6 +558,7 @@ export default function GamePage({ params }: GamePageProps) {
     <div className={styles.gamePage}>
       <PingIndicator socket={socket} />
 
+      {lostConnectionHint && <LostConnectionBanner hint={lostConnectionHint} />}
       {error  && <div className={styles.errorBanner}  data-testid="error-banner">{error}</div>}
       {notice && <div className={styles.noticeBanner} data-testid="capture-banner">{notice}</div>}
 
@@ -540,6 +593,43 @@ export default function GamePage({ params }: GamePageProps) {
           >
             {muted ? '🔇' : '🔊'}
           </button>
+          {myPlayer?.isHost && (
+            <div className={styles.kickMenuWrap}>
+              <button
+                className={styles.iconBtn}
+                onClick={() => setShowKickMenu((v) => !v)}
+                aria-label="Manage players"
+                aria-expanded={showKickMenu}
+                title="Manage players — remove someone who's never coming back"
+                id="btn-manage-players"
+              >
+                👥
+              </button>
+              {showKickMenu && (
+                <div className={styles.kickMenu} role="menu" data-testid="kick-menu">
+                  <div className={styles.kickMenuTitle}>REMOVE A PLAYER</div>
+                  {gameState.players.filter((p) => p.slotIndex !== myPlayerIndex && !p.isFinished).length === 0 ? (
+                    <div className={styles.kickMenuEmpty}>Nobody left to remove</div>
+                  ) : (
+                    gameState.players
+                      .filter((p) => p.slotIndex !== myPlayerIndex && !p.isFinished)
+                      .map((p) => (
+                        <div key={p.id} className={styles.kickMenuItem}>
+                          <span>{p.name}{!p.isConnected ? ' 🔌' : ''}</span>
+                          <button
+                            className={styles.kickMenuRemove}
+                            onClick={() => { handleKick(p.slotIndex); setShowKickMenu(false); }}
+                            aria-label={`Remove ${p.name}`}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           <button
             className={styles.iconBtn}
             onClick={handleLeave}
@@ -585,11 +675,24 @@ export default function GamePage({ params }: GamePageProps) {
 }
 
 /** Centred page chrome shared by every pre-game screen. */
-function Shell({ socket, children }: { socket: Socket | null; children: React.ReactNode }) {
+function Shell({ socket, lostConnectionHint, children }: {
+  socket: Socket | null; lostConnectionHint: string | null; children: React.ReactNode;
+}) {
   return (
     <div className={styles.centered}>
       <PingIndicator socket={socket} />
+      {lostConnectionHint && <LostConnectionBanner hint={lostConnectionHint} />}
       {children}
+    </div>
+  );
+}
+
+/** Shown once a disconnect has lasted long enough to stop being just a
+ *  reconnect blip socket.io is quietly retrying on its own. */
+function LostConnectionBanner({ hint }: { hint: string }) {
+  return (
+    <div className={styles.errorBanner} role="alert" data-testid="lost-connection-banner">
+      {hint}
     </div>
   );
 }

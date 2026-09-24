@@ -7,9 +7,11 @@
 
 const { createServer } = require('http');
 const { parse }        = require('url');
+const { networkInterfaces } = require('os');
 const next             = require('next');
 const { Server }       = require('socket.io');
 const bcrypt           = require('bcryptjs');
+const mdns             = require('multicast-dns')();
 const {
   generateRoomCode, createInitialState, sanitizeState, createPlayer,
   getValidMoves, applyMove, pickAutoMove, rollDie,
@@ -19,12 +21,62 @@ const {
 
 const dev  = process.env.NODE_ENV !== 'production';
 const port = parseInt(process.env.PORT || '4000', 10);
+// Read by /api/public-url. Route Handlers normally infer the port from the
+// incoming request's own URL, but that comes back wrong (Next's internal
+// default, not this custom server's real port) when Next is embedded in a
+// plain http.createServer like this one instead of run via `next dev`/`next
+// start` directly — so the real port is published here instead of trusted
+// from the request.
+global.__LUDO_PORT = port;
 
 const app    = next({ dev });
 const handle = app.getRequestHandler();
 
+// The stable name players can use instead of a raw LAN IP. Unlike an IP, a
+// ".local" name resolves dynamically on every lookup — so it keeps working
+// straight through a DHCP address change, without anyone re-sharing a link.
+// Configurable in case two people on the same LAN both run this game.
+const MDNS_NAME = (process.env.MDNS_NAME || 'ludo').toLowerCase().replace(/[^a-z0-9-]/g, '');
+const MDNS_HOSTNAME = `${MDNS_NAME}.local`;
+// Read by /api/public-url — the hostname itself never changes, only the IP
+// it resolves to, so this is safe to publish once rather than per-request.
+global.__LUDO_MDNS_HOSTNAME = MDNS_HOSTNAME;
+
+// Windows (and WSL/Docker/Hyper-V on it) auto-creates virtual adapters
+// alongside the real WiFi/Ethernet NIC — e.g. "vEthernet (WSL)" handing out
+// a 172.x address only reachable from this machine.
+const isVirtualAdapter = (name) =>
+  /vEthernet|Virtual|VMware|VirtualBox|Hyper-V|Loopback|Docker|WSL|Tailscale|ZeroTier/i.test(name);
+
+/**
+ * The LAN address other devices should use to reach this machine right now.
+ * Deliberately re-run on every call rather than cached — a DHCP lease can
+ * hand this machine a new address at any point while it keeps running, and
+ * the mDNS responder below needs to answer with whatever is actually true
+ * at query time, not a snapshot from when the server first started.
+ */
+function detectLanAddress() {
+  const nets = networkInterfaces();
+  const candidates = [];
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal) candidates.push({ name, address: net.address });
+    }
+  }
+  // Prefer real adapters; only fall back to virtual ones if that's all
+  // there is, so a share link is never left with nothing to offer.
+  const real = candidates.filter((c) => !isVirtualAdapter(c.name));
+  return (real.length > 0 ? real : candidates)[0]?.address ?? null;
+}
+
 // ─── Tunables (overridable via env for fast, deterministic tests) ────────────
-const RECONNECT_GRACE_MS = Number(process.env.RECONNECT_GRACE_MS) || 30_000;
+// A real WiFi drop-and-reconnect routinely takes longer than a few seconds
+// (router re-associating, DHCP renewing, a phone switching networks) — and
+// losing a seat, or the whole room, over that before the game has even
+// started is a much worse outcome than a stale lobby seat sitting around a
+// few extra minutes. Once the game has actually started, a disconnect never
+// times out at all — see the 'disconnect' handler.
+const LOBBY_RECONNECT_GRACE_MS = Number(process.env.LOBBY_RECONNECT_GRACE_MS) || 5 * 60_000;
 const AUTO_MOVE_DELAY_MS = Number(process.env.AUTO_MOVE_DELAY_MS) || 1_200;
 // A roll that leaves exactly one legal move isn't a decision — the player
 // only ever taps the one highlighted piece. Playing it for them saves a
@@ -142,6 +194,41 @@ async function savePlayerRow(player) {
     );
     dbFailures = 0;
   } catch (e) { noteDbFailure('savePlayerRow', e); }
+}
+
+/**
+ * Bring every non-finished game back into memory after a restart. The full
+ * state was already being saved continuously by saveGameState above — a
+ * restart used to silently orphan every in-progress room even though its
+ * data was sitting right there in MySQL the whole time; this is the one
+ * piece that was missing.
+ *
+ * Everyone's connection flag is reset — nobody's socket exists yet right
+ * after a fresh boot — so each player has to come back through the normal
+ * join_room reconnect flow, exactly like an ordinary disconnect. Consistent
+ * with the rest of this file: nothing here ever auto-plays a real player's
+ * turns just because the server bounced.
+ */
+async function restoreRoomsFromDb() {
+  if (!dbEnabled) return;
+  try {
+    const [rows] = await pool.query(
+      "SELECT room_code, board_state FROM games WHERE status IN ('waiting', 'playing')"
+    );
+    for (const row of rows) {
+      const state = typeof row.board_state === 'string' ? JSON.parse(row.board_state) : row.board_state;
+      for (const p of state.players) {
+        p.isConnected = false;
+        p.socketId    = null;
+      }
+      gameRooms.set(row.room_code, state);
+    }
+    if (rows.length) {
+      console.log(`[DB] Restored ${rows.length} in-progress room(s) from the last session.`);
+    }
+  } catch (e) {
+    noteDbFailure('restoreRoomsFromDb', e);
+  }
 }
 
 /**
@@ -365,7 +452,11 @@ function sweepRooms() {
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
-Promise.all([app.prepare(), initDb()]).then(() => {
+Promise.all([app.prepare(), initDb()]).then(async () => {
+  // Before accepting a single connection, so nobody can join a room that's
+  // about to be overwritten by its own restored copy.
+  await restoreRoomsFromDb();
+
   const httpServer = createServer((req, res) => {
     handle(req, res, parse(req.url, true));
   });
@@ -376,6 +467,16 @@ Promise.all([app.prepare(), initDb()]).then(() => {
   });
 
   setInterval(sweepRooms, SWEEP_INTERVAL_MS).unref?.();
+
+  // Re-arm every restored in-progress room. For the ordinary case (everyone
+  // reset to disconnected, isAuto false) this is a harmless no-op — armTurn
+  // just waits, same as it would for a live disconnect. It only actually
+  // does something for a player who was already on AUTO before the restart
+  // (they'd left mid-game earlier), letting their turns keep playing
+  // themselves instead of silently stalling forever.
+  for (const [code, restored] of gameRooms) {
+    if (restored.status === 'playing') armTurn(io, code);
+  }
 
   io.on('connection', (socket) => {
     console.log('[WS] Connected:', socket.id);
@@ -508,6 +609,12 @@ Promise.all([app.prepare(), initDb()]).then(() => {
           dbFailures = 0;
         } catch (e) { noteDbFailure('join_room persist', e); }
       }
+      // The players table row above is enough for the leaderboard, but the
+      // full room-restore-on-restart path (restoreRoomsFromDb) reads
+      // board_state alone — without this, a crash mid-lobby-fill would come
+      // back showing only whoever was in the room at creation, silently
+      // dropping everyone who joined after.
+      await saveGameState(state);
 
       socket.join(code);
       socket.data.roomCode    = code;
@@ -534,31 +641,69 @@ Promise.all([app.prepare(), initDb()]).then(() => {
       await startGame(roomCode, state);
     });
 
-    // ── Host: remove someone from the lobby ─────────────────────────────────
+    // ── Host: remove someone ────────────────────────────────────────────────
     socket.on('kick_player', async ({ slotIndex } = {}) => {
       const ctx = context();
       if (!ctx) return;
       const { roomCode, state, player } = ctx;
-      if (!player.isHost)             return fail('Only the host can remove players');
-      if (state.status !== 'waiting') return fail('Cannot remove players once the game has started');
+      if (!player.isHost)                 return fail('Only the host can remove players');
       if (slotIndex === player.slotIndex) return fail('You cannot remove yourself');
 
       const target = state.players[slotIndex];
       if (!target) return;
 
-      const targetSocket = target.socketId && io.sockets.sockets.get(target.socketId);
-      state.players.splice(slotIndex, 1);
-      reindexPlayers(state);
+      if (state.status === 'waiting') {
+        const targetSocket = target.socketId && io.sockets.sockets.get(target.socketId);
+        state.players.splice(slotIndex, 1);
+        reindexPlayers(state);
+        touch(state);
+
+        if (targetSocket) {
+          targetSocket.emit('kicked');
+          targetSocket.leave(roomCode);
+          targetSocket.data.roomCode = undefined;
+        }
+        // Slots shifted, so everyone needs their index re-issued.
+        resyncIndices(io, roomCode, state);
+        broadcastState(io, roomCode, state);
+        await saveGameState(state);
+        return;
+      }
+
+      if (state.status !== 'playing') return fail('Cannot remove players now');
+      if (target.isFinished)          return fail('That player is already out');
+
+      // Mid-game the seat can't just be spliced out — every other player's
+      // slot, pieces, and colour are keyed by index, and renumbering them
+      // under an in-progress game would be far more disruptive than just
+      // removing this one player from the turn rotation. Their pieces stay
+      // exactly where they are on the board; they simply never move again.
+      const wasTheirTurn = state.currentPlayerIndex === slotIndex;
+      target.isFinished  = true;
+      // Not ranked yet — finalizeIfOver places forfeits once the game
+      // actually ends, so an early kick can't outrank a real finisher.
+      (state.kickedOrder ||= []).push(target.slotIndex);
       touch(state);
 
+      const targetSocket = target.socketId && io.sockets.sockets.get(target.socketId);
       if (targetSocket) {
         targetSocket.emit('kicked');
         targetSocket.leave(roomCode);
         targetSocket.data.roomCode = undefined;
       }
-      // Slots shifted, so everyone needs their index re-issued.
-      resyncIndices(io, roomCode, state);
+      io.to(roomCode).emit('player_kicked', slotIndex);
+
+      // Removing them may have left only one real player standing.
+      finalizeIfOver(state);
+      if (state.status === 'finished') {
+        broadcastState(io, roomCode, state);
+        return endGame(io, roomCode, state);
+      }
+
+      if (wasTheirTurn) { advanceTurn(state, slotIndex); clearDice(state); }
       broadcastState(io, roomCode, state);
+      await saveGameState(state);
+      if (wasTheirTurn) armTurn(io, roomCode);
     });
 
     // ── Roll ────────────────────────────────────────────────────────────────
@@ -691,6 +836,7 @@ Promise.all([app.prepare(), initDb()]).then(() => {
         touch(state);
         resyncIndices(io, roomCode, state);
         broadcastState(io, roomCode, state);
+        await saveGameState(state);
       } else {
         // Mid-game their seat has to stay, or the board would renumber under
         // everyone — hand it to AUTO instead.
@@ -699,6 +845,10 @@ Promise.all([app.prepare(), initDb()]).then(() => {
         player.socketId    = null;
         touch(state);
         await savePlayerRow(player);
+        // The players-table row above covers the leaderboard; board_state
+        // also needs it, or restoring after a crash before this player's
+        // next natural save would forget they'd been handed to AUTO at all.
+        await saveGameState(state);
         io.to(roomCode).emit('player_auto', player.slotIndex);
         broadcastState(io, roomCode, state);
         armTurn(io, roomCode);
@@ -733,23 +883,15 @@ Promise.all([app.prepare(), initDb()]).then(() => {
       // cost people their slot every time they reloaded the page.
       if (state.status === 'waiting') return scheduleLobbyRemoval(io, roomCode, player);
 
-      // Nothing to schedule for a game that has already finished.
-      if (state.status !== 'playing') return;
-
-      clearDisconnectTimer(roomCode, playerIndex, player.id);
-      disconnectTimers.set(`${roomCode}_${playerIndex}`, setTimeout(() => {
-        disconnectTimers.delete(`${roomCode}_${playerIndex}`);
-        const s = gameRooms.get(roomCode);
-        if (!s) return;
-        const p = s.players[playerIndex];
-        if (!p || p.isConnected) return; // came back inside the grace period
-
-        p.isAuto = true;
-        savePlayerRow(p);
-        io.to(roomCode).emit('player_auto', playerIndex);
-        broadcastState(io, roomCode, s);
-        armTurn(io, roomCode);
-      }, RECONNECT_GRACE_MS));
+      // Mid-game, a dropped connection never hands the seat to AUTO on its
+      // own — the game just waits, however long it takes, for the real
+      // person to come back (armTurn already leaves a connected-but-idle
+      // player alone indefinitely; a disconnected one with isAuto still
+      // false gets exactly the same treatment, since nothing here ever sets
+      // it true). NOTE: kick_player currently only works pre-start
+      // ("Cannot remove players once the game has started") — so right now
+      // there is genuinely no way to move on if someone never comes back
+      // mid-game. Flagged for the user rather than silently assumed away.
     });
   });
 
@@ -766,7 +908,7 @@ Promise.all([app.prepare(), initDb()]).then(() => {
     const key = lobbyTimerKey(roomCode, player.id);
     if (disconnectTimers.has(key)) clearTimeout(disconnectTimers.get(key));
 
-    disconnectTimers.set(key, setTimeout(() => {
+    disconnectTimers.set(key, setTimeout(async () => {
       disconnectTimers.delete(key);
       const s = gameRooms.get(roomCode);
       if (!s || s.status !== 'waiting') return;
@@ -782,7 +924,8 @@ Promise.all([app.prepare(), initDb()]).then(() => {
       touch(s);
       resyncIndices(io, roomCode, s);
       broadcastState(io, roomCode, s);
-    }, RECONNECT_GRACE_MS));
+      await saveGameState(s);
+    }, LOBBY_RECONNECT_GRACE_MS));
   }
 
   /** After a lobby reshuffle, tell every socket what its slot is now. */
@@ -812,36 +955,35 @@ Promise.all([app.prepare(), initDb()]).then(() => {
   httpServer.listen(port, '0.0.0.0', () => {
     console.log('\n🎮 Ludo Game running at:');
     console.log(`   Local:   http://localhost:${port}`);
-    const { networkInterfaces } = require('os');
-    const nets = networkInterfaces();
-    // Windows (and WSL/Docker/Hyper-V on it) auto-creates virtual adapters
-    // alongside the real WiFi/Ethernet NIC — e.g. "vEthernet (WSL)" handing
-    // out a 172.x address. Those are only reachable from this machine, so
-    // listing them as shareable LAN addresses is actively misleading.
-    const isVirtualAdapter = (name) => /vEthernet|Virtual|VMware|VirtualBox|Hyper-V|Loopback|Docker|WSL|Tailscale|ZeroTier/i.test(name);
-
-    const candidates = [];
-    for (const name of Object.keys(nets)) {
-      for (const net of nets[name]) {
-        if (net.family === 'IPv4' && !net.internal) candidates.push({ name, address: net.address });
-      }
-    }
-    // Prefer real adapters; only fall back to virtual ones if that's all
-    // there is, so a share link is never left with nothing to offer.
-    const real = candidates.filter((c) => !isVirtualAdapter(c.name));
-    const toShow = real.length > 0 ? real : candidates;
-
-    for (const { address } of toShow) {
-      const lanUrl = `http://${address}:${port}`;
-      console.log(`   Network: ${lanUrl}  ← Share this on WiFi`);
-      // First candidate wins — good enough on the single-NIC machines this
-      // actually runs on, and used as the share-link base whenever a client
-      // opened the page via localhost (where window.location.origin would
-      // otherwise produce a dead link for everyone else).
-      if (!global.__LUDO_LAN_URL) global.__LUDO_LAN_URL = lanUrl;
-    }
+    // This is only ever accurate at the instant the server starts — a DHCP
+    // lease can hand this machine a new address at any later point while it
+    // keeps running. The share-link page never trusts this snapshot for that
+    // reason: /api/public-url re-detects it live, on every request.
+    const address = detectLanAddress();
+    if (address) console.log(`   Network: http://${address}:${port}  ← Share this on WiFi`);
+    console.log(`   Stable:  http://${MDNS_HOSTNAME}:${port}  ← Keeps working even if the address above changes`);
     console.log('');
     detectNgrokUrl();
+  });
+
+  // ─── mDNS: a name that survives an IP change ───────────────────────────────
+  // A ".local" hostname resolves dynamically on every lookup, unlike a raw
+  // IP — so answering with whatever detectLanAddress() says RIGHT NOW, rather
+  // than a value fixed at startup, is what makes a link built on this name
+  // keep working straight through a DHCP address change. Supported out of
+  // the box by Windows, macOS, iOS and modern Android; some locked-down
+  // guest WiFi networks block the underlying multicast traffic, which is why
+  // this is offered as an alternative to the raw IP, not a replacement.
+  mdns.on('query', (query) => {
+    const asksForUs = query.questions.some(
+      (q) => q.type === 'A' && q.name.toLowerCase() === MDNS_HOSTNAME
+    );
+    if (!asksForUs) return;
+    const address = detectLanAddress();
+    if (!address) return;
+    mdns.respond({
+      answers: [{ name: MDNS_HOSTNAME, type: 'A', ttl: 120, data: address }],
+    });
   });
 });
 

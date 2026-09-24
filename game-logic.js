@@ -52,6 +52,11 @@ function createInitialState(roomCode, playerCount, passwordHash) {
     lastMove:             null,
     winner:               null,
     rankings:             [],
+    // Slots forced out mid-game (kicked/forfeited), in the order it happened.
+    // Held here rather than folded straight into `rankings` — see
+    // finalizeIfOver for why: a forfeit isn't a finish, and shouldn't be able
+    // to outrank someone who actually completes the race afterwards.
+    kickedOrder:          [],
     createdAt:            Date.now(),
     // Which color a seat gets, randomized once per room — see shuffled().
     colorOrder:           shuffled(Array.from({ length: MAX_PLAYERS }, (_, i) => i)),
@@ -151,6 +156,15 @@ function skipTurn(state, playerIndex) {
 /**
  * Close the game out once at most one player is still going: the straggler is
  * awarded the final rank rather than being left to play alone. Mutates.
+ *
+ * Anyone forced out mid-game (kicked/forfeited) is only placed into
+ * `rankings` here, at the very end — not at the moment they're kicked. A
+ * forfeit isn't a finish: pushing them into `rankings` immediately would let
+ * the first person kicked claim finishRank 1 (a "win", per recordResults)
+ * ahead of players who go on to actually complete the race. They're ranked
+ * below every real finisher and below whoever was still playing at the end,
+ * ordered so that lasting longer before being kicked still counts for something
+ * (most-recently-kicked ranks best among the forfeits).
  */
 function finalizeIfOver(state) {
   const active = state.players.filter((p) => !p.isFinished);
@@ -162,6 +176,15 @@ function finalizeIfOver(state) {
     last.finishRank = state.rankings.length + 1;
     state.rankings.push(last.slotIndex);
   }
+
+  const kickedOrder = state.kickedOrder || [];
+  for (let i = kickedOrder.length - 1; i >= 0; i--) {
+    const player = state.players[kickedOrder[i]];
+    player.finishRank = state.rankings.length + 1;
+    state.rankings.push(player.slotIndex);
+  }
+  state.kickedOrder = [];
+
   state.status = 'finished';
   state.winner = state.rankings.length ? state.rankings[0] : null;
   return state;

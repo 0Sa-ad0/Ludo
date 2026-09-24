@@ -163,24 +163,35 @@ Unused corners/arms are greyed out and labelled EMPTY.
 
 ### If a player disconnects
 
-| Time | What happens |
-|---|---|
-| 0–30 s | 🔌 "Reconnecting…" badge; their turn is held |
-| After 30 s | Player switches to 🤖 **AUTO** |
-| They return | They take back control immediately |
+**Before the game starts (lobby):** their seat is held for several minutes —
+generous on purpose, since a WiFi blip, a phone's network address changing,
+or a page refresh routinely takes longer than a few seconds to recover from,
+and losing the whole room over that before anyone's even started playing
+would be a much worse outcome than a seat sitting empty a little longer. If
+they genuinely don't come back within that window, the seat is freed so the
+room can fill up.
+
+**Once the game has started:** there is no timeout at all. A disconnected
+player's turn is simply held — the game waits, however long it takes — and
+they pick up exactly where they left off, with the same room code and the
+same name, whenever they reconnect. Nothing auto-plays a real player's turns
+for them; if someone is genuinely gone for good, the rest of the table has
+to decide how to handle it themselves.
 
 ### If a player just goes idle
 
-A **connected** player who does nothing for **45 seconds** has that turn played
-for them. Without this, one person walking away from their phone freezes the
-room for everybody else.
+Never times out. A **connected** player can sit on their turn for as long as
+they like — everyone in this game is physically together on different
+devices, so there's no "too slow," only "still deciding."
 
 ### AUTO mode
 
-- Not AI: it picks uniformly at random from the legal moves
-- It cannot make an illegal move — it uses the same rule function the server
-  validates human moves with
-- Its only job is to keep the game moving
+AUTO only ever happens when a player **explicitly leaves** mid-game (the 🚪
+button) — never from a disconnect. It's not AI: it picks uniformly at random
+from the legal moves, using the exact same rule function the server
+validates human moves with, so it can never make an illegal one. Its only
+job is to keep a game moving after someone has deliberately stepped away
+from it.
 
 ---
 

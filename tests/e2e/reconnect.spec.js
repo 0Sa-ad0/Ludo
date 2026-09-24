@@ -1,10 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { clickUntil } = require('./helpers');
 
-// Test server runs with RECONNECT_GRACE_MS=4000 (see playwright.config.js)
-// so these run in seconds instead of the real 30s production value.
-const GRACE_MS = 4000;
-
 async function createTwoPlayerGame(browser) {
   const hostCtx = await browser.newContext();
   const host = await hostCtx.newPage();
@@ -35,19 +31,18 @@ async function safeClose(ctx) {
   try { await ctx.close(); } catch { /* already closed */ }
 }
 
-// Note: the actual guarantee that reconnecting-in-time cancels the pending
-// AUTO flip is covered by tests/integration/reconnect.test.js, which talks
-// to the server directly over sockets. That's the right layer for a
-// server-side timer-bookkeeping regression — routing it through the full
-// browser UI adds several seconds of unrelated, high-variance latency (dev
-// compile, React Strict Mode's dev-only double-connect, click retries) that
-// have nothing to do with what's being verified. These tests instead cover
-// what the browser layer actually owns: surfacing the right toast at the
-// right time (the persistent per-player side-panel badge these used to
-// check was removed — it duplicated the player's name, which now renders
-// once, directly on the board).
+// Note: the deeper server-side timer bookkeeping (reconnect cycles, seat
+// ownership races) is covered by tests/integration/reconnect.test.js, which
+// talks to the server directly over sockets — the right layer for that,
+// since routing it through the full browser UI adds several seconds of
+// unrelated, high-variance latency (dev compile, React Strict Mode's
+// dev-only double-connect, click retries) that have nothing to do with what
+// it's verifying. These tests instead cover what the browser layer actually
+// owns: surfacing the right toast (the persistent per-player side-panel
+// badge these used to check was removed — it duplicated the player's name,
+// which now renders once, directly on the board).
 test.describe('Disconnect / reconnect / AUTO mode (UI)', () => {
-  test('a disconnected player triggers a toast, then an AUTO toast after the grace period', async ({ browser }) => {
+  test('a disconnected player triggers a toast, and the game just waits — no AUTO takeover', async ({ browser }) => {
     const { hostCtx, host, guestCtx } = await createTwoPlayerGame(browser);
 
     // Guest disconnects (closing the context tears down the socket).
@@ -55,8 +50,24 @@ test.describe('Disconnect / reconnect / AUTO mode (UI)', () => {
 
     await expect(host.getByTestId('capture-banner')).toHaveText(/lost connection/i, { timeout: 3000 });
 
-    // After the grace period, an AUTO toast follows.
-    await expect(host.getByTestId('capture-banner')).toHaveText(/on auto/i, { timeout: GRACE_MS + 3000 });
+    // A disconnect mid-game must never hand the seat to AUTO on its own —
+    // the game waits, however long it takes, for the real person. Confirm no
+    // "on AUTO" toast ever follows, well past what the old grace period used
+    // to be.
+    //
+    // Polled continuously rather than sampled once at the end: the toast is
+    // ephemeral (TOAST_MS = 3.2s), so an "on AUTO" toast could appear and
+    // auto-dismiss entirely within this window — a single check at t=5s
+    // would silently miss it. banner.count() guards against the locator
+    // matching zero elements, which is the expected steady state once the
+    // earlier "lost connection" toast has itself dismissed.
+    const banner = host.getByTestId('capture-banner');
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const text = (await banner.count()) > 0 ? await banner.textContent() : '';
+      expect(text || '').not.toMatch(/on auto/i);
+      await host.waitForTimeout(200);
+    }
 
     await safeClose(hostCtx);
   });
