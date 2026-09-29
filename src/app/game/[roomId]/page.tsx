@@ -156,6 +156,12 @@ export default function GamePage({ params }: GamePageProps) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSocket(socket);
 
+    // The server's only way to tell a genuinely-still-open tab apart from one
+    // whose connection died silently (e.g. a network change, which never
+    // sends a clean close) before its own heartbeat notices — see join_room
+    // in server.js. Any live tab just acks immediately.
+    socket.on('are_you_there', (ack?: () => void) => { ack?.(); });
+
     socket.on('connect', () => {
       setConnecting(false);
       if (lostConnectionTimerRef.current) { clearTimeout(lostConnectionTimerRef.current); lostConnectionTimerRef.current = null; }

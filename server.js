@@ -558,8 +558,41 @@ Promise.all([app.prepare(), initDb()]).then(async () => {
       }
 
       // ── Reconnecting to an existing seat ──
-      const existing = state.players.find((p) => p.name === name && !p.isConnected);
+      // Matched by name alone, not just isConnected: that flag (and Socket.io's
+      // own `.connected`) can lag up to ~45s behind reality if the old
+      // connection died without a clean close — a network change (e.g. WiFi ->
+      // mobile hotspot) never sends one. Trusting the flag left a genuinely-
+      // reconnecting player locked out ("name already taken" / "game already
+      // started") for the whole window. But a name match alone isn't enough
+      // either — if the old socket is still genuinely alive, this is a real
+      // duplicate name, not a reconnect, so it's actively probed below rather
+      // than assumed dead.
+      const existing = state.players.find((p) => p.name === name);
       if (existing) {
+        let seatIsFree = !existing.isConnected;
+
+        if (!seatIsFree && existing.socketId && existing.socketId !== socket.id) {
+          const staleSocket = io.sockets.sockets.get(existing.socketId);
+          if (!staleSocket) {
+            seatIsFree = true; // already fully gone; our flag just hasn't caught up
+          } else {
+            // A short, active liveness check — independent of the connection's
+            // own (much slower) heartbeat timers — rather than trusting a flag
+            // that can't distinguish "still here" from "silently gone".
+            const stillAlive = await new Promise((resolve) => {
+              staleSocket.timeout(1500).emit('are_you_there', (err) => resolve(!err));
+            });
+            if (!stillAlive) {
+              staleSocket.leave(code);
+              staleSocket.data.roomCode = undefined;
+              staleSocket.disconnect(true);
+              seatIsFree = true;
+            }
+          }
+        }
+
+        if (!seatIsFree) return fail('That name is already taken in this room');
+
         existing.socketId    = socket.id;
         existing.isConnected = true;
         existing.isAuto      = false;

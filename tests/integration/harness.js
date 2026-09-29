@@ -80,6 +80,12 @@ function makeClientFactory(port) {
   const connect = () => new Promise((resolve) => {
     const socket = io(url, OPTS);
     open.add(socket);
+    // Real browser tabs ack this (see page.tsx) so the server can tell a
+    // genuinely-live connection apart from one that died silently — a test
+    // socket that stays open is just as "alive" as a real one, so it needs
+    // to answer the same way or every duplicate-name check below would
+    // wrongly read it as dead.
+    socket.on('are_you_there', (ack) => { if (typeof ack === 'function') ack(); });
     socket.on('connect', () => resolve(socket));
   });
 
