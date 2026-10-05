@@ -59,62 +59,51 @@
 .topBar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
   padding: 8px 12px;
-  /* Leave room for the fixed ping badge in the corner. */
-  padding-right: 92px;
   background: rgba(18,18,42,0.92);
   border-bottom: 1px solid var(--border);
   backdrop-filter: blur(8px);
   position: sticky;
   top: 0;
   z-index: 100;
-  min-height: 52px;
+  min-height: 56px;
 }
 
-.roomInfo { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.roomInfo { display: flex; align-items: center; gap: 8px; min-width: 0; }
 
 .roomLabel {
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   color: var(--text-dim);
   letter-spacing: 0.1em;
   font-family: 'Orbitron', sans-serif;
 }
 
 .roomCode {
-  font-size: 0.95rem;
+  font-size: 1.1rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   color: var(--pink);
   text-shadow: var(--glow-pink);
 }
 
-.turnInfo { flex: 1; text-align: center; min-width: 0; }
-
-.turnText {
+.modeTag {
   font-family: 'Orbitron', sans-serif;
-  font-size: 0.74rem;
-  font-weight: 700;
+  font-size: 0.62rem;
   letter-spacing: 0.06em;
-  display: inline-block;
-  transition: color 0.3s ease;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
   white-space: nowrap;
 }
 
-/* Only pulse when it's actually actionable for this viewer — pulsing
-   identically for everyone all the time tells nobody anything. */
-.turnText[data-my-turn="true"] {
-  animation: pulse-glow 1.2s infinite, turn-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.topActions { display: flex; gap: 4px; flex-shrink: 0; }
+.topActions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
 .iconBtn {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   font-size: 0.95rem;
@@ -166,42 +155,52 @@
   border: 1px solid rgba(255,45,45,0.4);
   color: #ff6b6b;
   border-radius: 6px;
-  font-size: 0.65rem;
-  padding: 2px 8px;
-  line-height: 1.6;
+  font-size: 0.75rem;
+  padding: 6px 12px;
+  min-height: 34px;
+  line-height: 1.2;
   touch-action: manipulation;
 }
 .kickMenuRemove:hover { background: rgba(255,45,45,0.15); }
 .kickMenuEmpty { padding: 6px 8px; font-size: 0.75rem; color: var(--text-dim, rgba(255,255,255,0.5)); }
 
 /* ─── Play area ────────────────────────────────────────────────────────── */
+/* Wide screens: board in the middle, player panel beside it. Tall/narrow
+   screens (phones): board on top, panel underneath — that fills what used to
+   be a half-screen empty gap between the board and the dice. */
 .gameArea {
   display: flex;
   flex: 1;
   align-items: center;
   justify-content: center;
-  padding: 8px;
-  gap: 8px;
+  padding: 12px;
+  gap: 20px;
   min-height: 0;
 }
 
 /* The board is always square. Its size is driven by width alone, with
    aspect-ratio deriving the height, so flex can never stretch the box into a
-   non-square and letterbox the SVG inside it. Player names/turn order now
-   render on the board itself, so nothing else needs to share this row. */
+   non-square and letterbox the SVG inside it. */
 .boardContainer {
   flex: none;
   align-self: center;
   aspect-ratio: 1;
-  width: min(calc(100vw - 40px), calc(100dvh - 190px));
+  /* 56 top bar + ~100 dice bar + padding; 300 = the side panel and gaps. */
+  width: min(calc(100vw - 320px), calc(100dvh - 190px));
   max-width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
+.sidePanel {
+  flex: none;
+  width: 260px;
+  align-self: center;
+}
+
 .diceArea {
-  padding: 10px 16px 16px;
+  padding: 12px 16px calc(14px + env(safe-area-inset-bottom));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -247,22 +246,29 @@
   font-weight: 600;
 }
 
-/* ─── Mobile ───────────────────────────────────────────────────────────── */
-@media (max-width: 640px) {
+/* ─── Portrait / narrow ────────────────────────────────────────────────── */
+/* Below 900px wide, unless the screen is clearly landscape (a phone turned
+   sideways keeps the side-by-side layout — stacking there would shrink the
+   board to a sliver). */
+@media (max-width: 899px) and (max-aspect-ratio: 5/4) {
   .gameArea {
     flex-direction: column;
-    /* Pack from the top instead of centring. Centring left a large gap under
-       the header and pushed the second row of player panels down into the
-       toast area at the bottom. */
-    justify-content: flex-start;
-    padding: 6px 4px;
-    gap: 6px;
+    justify-content: center;
+    padding: 8px;
+    gap: 12px;
   }
 
+  /* 56 top bar + ~96 dice bar + ~100 for the two-row player panel. */
   .gameArea .boardContainer {
-    width: min(95vw, calc(100dvh - 300px));
+    width: min(calc(100vw - 16px), calc(100dvh - 270px));
   }
 
-  .topBar { padding-right: 88px; }
+  .sidePanel { width: min(100%, 560px); }
+
   .roomLabel { display: none; }
+}
+
+@media (max-width: 899px) and (min-aspect-ratio: 5/4) {
+  .gameArea .boardContainer { width: min(calc(100vw - 260px), calc(100dvh - 170px)); }
+  .sidePanel { width: 200px; }
 }

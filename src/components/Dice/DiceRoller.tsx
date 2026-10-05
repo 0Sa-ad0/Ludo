@@ -22,11 +22,30 @@ interface Props {
   currentPlayerColor: string;
   /** Set while the server is about to play a forced single-legal-move for someone. */
   forcedMove?: { playerName: string; deadline: number } | null;
+  /** Whose turn it is, in words — the main status line of the game. */
+  turnLabel: string;
+  isMyTurn: boolean;
+  /** Colour for the dice itself — the roller's, while it still shows a
+   *  roll from before the turn moved on. Defaults to currentPlayerColor. */
+  diceColor?: string;
+  /** Set when the value shown belongs to someone other than whose turn it
+   *  is now ("You" or their name). */
+  rolledBy?: string | null;
 }
 
 export default function DiceRoller({
-  value, rolling, canRoll, waitingForMove, onRoll, currentPlayerColor, forcedMove,
+  value: valueProp, rolling, canRoll, waitingForMove, onRoll, currentPlayerColor, forcedMove: forcedMoveProp,
+  turnLabel, isMyTurn, diceColor: diceColorProp, rolledBy,
 }: Props) {
+  // Your own turn to roll always starts from a blank dice — the previous
+  // player's leftover number (in their colour) would just be noise right as
+  // you're being told to roll.
+  const value = canRoll ? null : valueProp;
+  const diceColor = canRoll ? currentPlayerColor : (diceColorProp ?? currentPlayerColor);
+  // The server announces a forced move the instant the roll lands server-side
+  // — seconds before the dice stops spinning here. Showing it straight away
+  // would give the roll away (only a 6 releases a piece), so it waits.
+  const forcedMove = rolling ? null : forcedMoveProp;
   // Cycle the face while tumbling so the dice reads as *rolling* rather than
   // just spinning on its final value.
   const [face, setFace] = useState(1);
@@ -76,52 +95,64 @@ export default function DiceRoller({
         disabled={!canRoll}
         aria-label={canRoll ? 'Roll dice' : value !== null ? `Dice shows ${value}` : 'Dice'}
         aria-live="polite"
-        style={{ '--player-color': currentPlayerColor } as React.CSSProperties}
+        style={{ '--player-color': diceColor } as React.CSSProperties}
       >
         <svg viewBox="0 0 100 100" className={styles.diceSvg} aria-hidden>
           <rect
             x={4} y={4} width={92} height={92} rx={18} ry={18}
-            fill="var(--bg-card2)" stroke={currentPlayerColor} strokeWidth={3}
-            style={{ filter: `drop-shadow(0 0 8px ${currentPlayerColor})` }}
+            fill="var(--bg-card2)" stroke={diceColor} strokeWidth={3}
+            style={{ filter: `drop-shadow(0 0 8px ${diceColor})` }}
           />
           {idle ? (
             <text x={50} y={54} textAnchor="middle" dominantBaseline="central" fontSize={44}>🎲</text>
           ) : (
             dots.map(([cx, cy], i) => (
-              <circle key={i} cx={cx} cy={cy} r={8} fill={currentPlayerColor}
-                style={{ filter: `drop-shadow(0 0 4px ${currentPlayerColor})` }} />
+              <circle key={i} cx={cx} cy={cy} r={8} fill={diceColor}
+                style={{ filter: `drop-shadow(0 0 4px ${diceColor})` }} />
             ))
           )}
           {forcedMove && (
             <circle
               cx={50} cy={50} r={RING_R} fill="none"
-              stroke={currentPlayerColor} strokeWidth={4} strokeLinecap="round"
+              stroke={diceColor} strokeWidth={4} strokeLinecap="round"
               strokeDasharray={RING_C} strokeDashoffset={RING_C * (1 - remainingFrac)}
               transform="rotate(-90 50 50)"
-              style={{ filter: `drop-shadow(0 0 6px ${currentPlayerColor})` }}
+              style={{ filter: `drop-shadow(0 0 6px ${diceColor})` }}
             />
           )}
         </svg>
       </button>
 
-      <div className={styles.hint}>
-        {forcedMove ? (
-          <span className={styles.tapHint} style={{ color: currentPlayerColor }}>
-            {forcedMove.playerName} — only move, auto-playing…
-          </span>
-        ) : rolling ? (
-          <span className={styles.waiting}>Rolling…</span>
-        ) : canRoll ? (
-          <span className={styles.tapHint} style={{ color: currentPlayerColor }}>TAP TO ROLL</span>
-        ) : waitingForMove ? (
-          <span className={styles.tapHint} style={{ color: currentPlayerColor }}>
-            PICK A PIECE {value !== null && `· ${value}`}
-          </span>
-        ) : value !== null ? (
-          <span className={styles.rolled}>Rolled <strong>{value}</strong></span>
-        ) : (
-          <span className={styles.waiting}>Waiting…</span>
-        )}
+      <div className={styles.status}>
+        <span
+          className={styles.turnText}
+          data-testid="turn-text"
+          data-my-turn={isMyTurn}
+          style={{ color: currentPlayerColor }}
+        >
+          {turnLabel}
+        </span>
+        <span className={styles.hint}>
+          {rolling ? (
+            <span className={styles.waiting}>Rolling…</span>
+          ) : forcedMove ? (
+            <span className={styles.tapHint} style={{ color: currentPlayerColor }}>
+              Only one move — playing it for {forcedMove.playerName === 'You' ? 'you' : forcedMove.playerName}…
+            </span>
+          ) : canRoll ? (
+            <span className={styles.tapHint} style={{ color: currentPlayerColor }}>Tap the dice to roll</span>
+          ) : waitingForMove ? (
+            <span className={styles.tapHint} style={{ color: currentPlayerColor }}>
+              Rolled {value} — tap a glowing piece
+            </span>
+          ) : value !== null ? (
+            <span className={styles.rolled}>
+              {rolledBy ? `${rolledBy} rolled` : 'Rolled'} <strong>{value}</strong>
+            </span>
+          ) : (
+            <span className={styles.waiting}>Waiting for their roll</span>
+          )}
+        </span>
       </div>
     </div>
   );

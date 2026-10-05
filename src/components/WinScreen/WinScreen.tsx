@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import type { GameState } from '@/lib/types';
-import { PLAYER_COLORS } from '@/lib/constants';
+import { PLAYER_COLORS, TEAM_NAMES } from '@/lib/constants';
 import styles from './WinScreen.module.css';
 
 interface Props {
@@ -29,7 +29,7 @@ export default function WinScreen({ gameState, myPlayerIndex }: Props) {
     canvas.width  = window.innerWidth;
     canvas.height = window.innerHeight;
 
-    const neonColors = ['#ff2d78','#00c8ff','#39ff14','#ff6b00','#bf00ff','#ffe600','#ffd700'];
+    const neonColors = [...PLAYER_COLORS.map((c) => c.hex), '#ffd700'];
     const pieces: { x: number; y: number; vx: number; vy: number; color: string; size: number; angle: number; va: number }[] = [];
 
     for (let i = 0; i < 180; i++) {
@@ -70,7 +70,13 @@ export default function WinScreen({ gameState, myPlayerIndex }: Props) {
 
   const rankings = gameState.rankings;
   const winner   = gameState.players[rankings[0]];
-  const iWon     = rankings[0] === myPlayerIndex;
+  const me       = gameState.players[myPlayerIndex];
+  const teamWin  = gameState.teamMode && gameState.winningTeam != null;
+  const iWon     = teamWin ? me?.team === gameState.winningTeam : rankings[0] === myPlayerIndex;
+
+  const title = teamWin
+    ? (iWon ? 'YOUR TEAM WINS!' : `${TEAM_NAMES[gameState.winningTeam!]} WINS!`)
+    : (iWon ? 'YOU WIN!' : `${winner?.name} WINS!`);
 
   return (
     <div className={styles.overlay}>
@@ -79,30 +85,31 @@ export default function WinScreen({ gameState, myPlayerIndex }: Props) {
       <div className={styles.card}>
         <div className={styles.crown}>👑</div>
         <h2 className={`${styles.title} font-orbitron`} style={{ color: PLAYER_COLORS[winner?.colorIndex]?.hex }}>
-          {iWon ? 'YOU WIN!' : `${winner?.name} WINS!`}
+          {title}
         </h2>
         <p className={styles.sub}>Game Over — Final Standings</p>
 
-        <div className={styles.rankings}>
+        <div className={styles.rankings} data-testid="final-rankings">
           {rankings.map((playerIdx, rank) => {
             const player = gameState.players[playerIdx];
             if (!player) return null;
             const color = PLAYER_COLORS[player.colorIndex];
             const isMe  = playerIdx === myPlayerIndex;
+            // Team games rank by team: both winners share first place.
+            const place = teamWin ? (player.finishRank ?? rank + 1) - 1 : rank;
+            const removed = gameState.kickedOrder?.includes(playerIdx);
             return (
               <div key={playerIdx} className={`${styles.rankRow} ${isMe ? styles.isMe : ''}`}
-                style={{ borderColor: rank === 0 ? color.hex : 'transparent' }}>
-                <span className={styles.medal}>{MEDALS[rank]}</span>
+                style={{ borderColor: place === 0 ? color.hex : 'transparent' }}>
+                <span className={styles.medal}>{MEDALS[place]}</span>
                 <span className={styles.playerName} style={{ color: color.hex }}>{player.name}</span>
+                {teamWin && player.team != null && <span className={styles.youTag}>{TEAM_NAMES[player.team]}</span>}
+                {removed && <span className={styles.youTag}>REMOVED</span>}
                 {isMe && <span className={styles.youTag}>YOU</span>}
               </div>
             );
           })}
         </div>
-
-        {myPlayerIndex === rankings[0] && (
-          <p className={styles.spectate}>Other players are still playing — you can watch!</p>
-        )}
 
         <div className={styles.buttons}>
           <Link id="btn-play-again" href="/" className="btn btn-primary">

@@ -2,12 +2,12 @@
 
 import { useMemo } from 'react';
 import type { GameState, Piece, Player, Point, WalkJob } from '@/lib/types';
-import { PLAYER_COLORS } from '@/lib/constants';
+import { PLAYER_COLORS, isLightColor } from '@/lib/constants';
 import {
-  HEX_VIEW, HEX_CX, HEX_CY, HEX_R_GOAL,
+  HEX_VIEW, HEX_CX, HEX_CY, HEX_R_GOAL, HEX_R_TRACK,
   getHexTrack, getHexHomeCols, getHexHomeBases, getHexArms, hexCorner,
   getLoopLen, isOnTrack, pathToTrack, isSafeSquare,
-  getValidMoves, startSquares, wouldCaptureAt,
+  getValidMoves, startSquares, wouldCaptureAt, sideOf,
 } from '@/lib/board';
 import { useWalkAnimation } from '@/lib/useWalkAnimation';
 import styles from './SquareBoard.module.css';
@@ -27,7 +27,17 @@ import styles from './SquareBoard.module.css';
 const CENTER: Point = [HEX_CX, HEX_CY];
 const TRACK_R = 15;
 const COL_R   = 13;
-const BASE_R  = 46;
+// Sized to the tightest case (5 arms), where a base sits closest to the track.
+const BASE_R  = 48;
+const BASE_SPOT = 18;
+const HOME_PIECE_R = 13;
+
+/** Rotate a point about the board centre by `rad`. */
+function rotate([x, y]: Point, rad: number): Point {
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  const dx = x - HEX_CX, dy = y - HEX_CY;
+  return [HEX_CX + dx * cos - dy * sin, HEX_CY + dx * sin + dy * cos];
+}
 
 interface Props {
   gameState: GameState;
@@ -45,9 +55,21 @@ export default function HexBoard({
   const { players, playerCount, currentPlayerIndex, diceValue, diceRolled } = gameState;
   const loopLen = getLoopLen(playerCount);
   const arms = getHexArms(playerCount);
-  const HEX_TRACK = useMemo(() => getHexTrack(playerCount), [playerCount]);
-  const HEX_HOME_COLS = useMemo(() => getHexHomeCols(playerCount), [playerCount]);
-  const HEX_HOME_BASES = useMemo(() => getHexHomeBases(playerCount), [playerCount]);
+
+  // Turn the whole board so the viewer's own home base sits at the bottom,
+  // nearest them — the square board already does this. Done by rotating the
+  // geometry itself, not the SVG, so text stays upright.
+  const turn = useMemo(() => {
+    const base = getHexHomeBases(playerCount)[myPlayerIndex];
+    if (!base) return 0;
+    return Math.PI / 2 - Math.atan2(base[1] - HEX_CY, base[0] - HEX_CX);
+  }, [playerCount, myPlayerIndex]);
+  const HEX_TRACK = useMemo(
+    () => getHexTrack(playerCount).map((p) => rotate(p, turn)), [playerCount, turn]);
+  const HEX_HOME_COLS = useMemo(
+    () => getHexHomeCols(playerCount).map((col) => col.map((p) => rotate(p, turn))), [playerCount, turn]);
+  const HEX_HOME_BASES = useMemo(
+    () => getHexHomeBases(playerCount).map((p) => rotate(p, turn)), [playerCount, turn]);
 
   const validMoveIds = useMemo(() => {
     if (!diceRolled || !diceSettled || currentPlayerIndex !== myPlayerIndex) return new Set<string>();
@@ -89,8 +111,8 @@ export default function HexBoard({
   function homeBaseSpots(slot: number): Point[] {
     const [bx, by] = HEX_HOME_BASES[slot];
     return [
-      [bx - 16, by - 16], [bx + 16, by - 16],
-      [bx - 16, by + 16], [bx + 16, by + 16],
+      [bx - BASE_SPOT, by - BASE_SPOT], [bx + BASE_SPOT, by - BASE_SPOT],
+      [bx - BASE_SPOT, by + BASE_SPOT], [bx + BASE_SPOT, by + BASE_SPOT],
     ];
   }
 
@@ -134,8 +156,47 @@ export default function HexBoard({
     return out;
   }, [validMoveIds, diceValue, players, myPlayerIndex, playerCount, loopLen, HEX_TRACK, HEX_HOME_COLS]);
 
+  /**
+   * Where a base's name label fits without covering anything. The board
+   * turns with the viewer, so no single fixed spot (below, above, inward) is
+   * clear for every base — each candidate is checked against the arms, the
+   * track ring, the goal and the other bases, and the first clear one wins.
+   */
+  function labelSpot(slot: number, text: string): Point {
+    const [bx, by] = HEX_HOME_BASES[slot];
+    const halfW = (text.length * 8.4) / 2, halfH = 8;
+    const apothem = HEX_R_TRACK * Math.cos(Math.PI / arms);
+    const spines = HEX_HOME_COLS.map((col, s) => {
+      const [ex, ey] = HEX_TRACK[(starts[s] + loopLen - 1) % HEX_TRACK.length];
+      return [ex, ey, col[col.length - 1][0], col[col.length - 1][1]];
+    });
+    const segDist = (px: number, py: number, [x1, y1, x2, y2]: number[]) => {
+      const dx = x2 - x1, dy = y2 - y1;
+      const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy || 1)));
+      return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+    };
+    const clear = (cx: number, cy: number) => {
+      for (const sx of [-halfW, 0, halfW]) {
+        for (const sy of [-halfH, 0, halfH]) {
+          const px = cx + sx, py = cy + sy;
+          const fromCentre = Math.hypot(px - HEX_CX, py - HEX_CY);
+          if (fromCentre > apothem - TRACK_R - 3) return false;
+          if (fromCentre < HEX_R_GOAL + 4) return false;
+          if (spines.some((seg) => segDist(px, py, seg) < COL_R + 5)) return false;
+          if (HEX_HOME_BASES.some(([ox, oy], o) => Math.hypot(px - ox, py - oy) < BASE_R + (o === slot ? 1 : 3))) return false;
+        }
+      }
+      return true;
+    };
+    const candidates: Point[] = [
+      [bx, by + BASE_R + 13], [bx, by - BASE_R - 9],
+      [bx + BASE_R + halfW + 4, by], [bx - BASE_R - halfW - 4, by],
+    ];
+    return candidates.find(([cx, cy]) => clear(cx, cy)) ?? candidates[0];
+  }
+
   const starts = startSquares(playerCount);
-  const hexOutline = Array.from({ length: arms }, (_, k) => hexCorner(k, arms).join(',')).join(' ');
+  const hexOutline = Array.from({ length: arms }, (_, k) => rotate(hexCorner(k, arms), turn).join(',')).join(' ');
 
   return (
     <svg
@@ -268,7 +329,7 @@ export default function HexBoard({
                 <PieceMarker
                   key={piece.id}
                   piece={piece} color={color.hex}
-                  x={x} y={y} r={12}
+                  x={x} y={y} r={HOME_PIECE_R}
                   isValid={validMoveIds.has(piece.id)}
                   isCapturing={capturingPieces.has(piece.id)}
                   label={`${player.name} piece ${i + 1}, in home base`}
@@ -295,7 +356,7 @@ export default function HexBoard({
               r={many ? 10 : 13}
               isValid={validMoveIds.has(piece.id)}
               isCapturing={capturingPieces.has(piece.id)}
-              isBlock={many && items.every((it) => it.player.slotIndex === player.slotIndex)}
+              isBlock={many && items.every((it) => sideOf(it.player) === sideOf(player))}
               label={`${player.name} piece ${piece.pieceIndex + 1}`}
               onActivate={onPieceClick}
             />
@@ -341,17 +402,18 @@ export default function HexBoard({
 
       {/* ── Player name labels, kept inside the ring ───────────────────── */}
       {players.map((player) => {
-        const [bx, by] = HEX_HOME_BASES[player.slotIndex];
+        const name = player.name.length > 10 ? `${player.name.slice(0, 9)}…` : player.name;
+        const [lx, ly] = labelSpot(player.slotIndex, name);
         const color = PLAYER_COLORS[player.colorIndex];
         return (
           <text
             key={`label-${player.slotIndex}`}
-            x={bx} y={by + BASE_R + 14}
-            textAnchor="middle" fontSize={12} fill={color.hex}
+            x={lx} y={ly}
+            textAnchor="middle" dominantBaseline="central" fontSize={12} fill={color.hex}
             fontFamily="Orbitron, sans-serif" fontWeight={700}
             style={{ userSelect: 'none' }}
           >
-            {player.name.length > 10 ? `${player.name.slice(0, 9)}…` : player.name}
+            {name}
           </text>
         );
       })}
@@ -393,10 +455,15 @@ function PieceMarker({
       className={isCapturing ? styles.captureFlash : undefined}
     >
       {isValid && (
-        <circle cx={x} cy={y} r={r + 6} fill="rgba(255,255,255,0.1)"
-          stroke={color} strokeWidth={2} className={styles.validGlow} />
+        <>
+          {/* Invisible, larger tap target — on a phone this board renders at
+              about half size, and the visible piece alone is tiny. */}
+          <circle cx={x} cy={y} r={r + 12} fill="transparent" />
+          <circle cx={x} cy={y} r={r + 6} fill="rgba(255,255,255,0.1)"
+            stroke={color} strokeWidth={2} className={styles.validGlow} />
+        </>
       )}
-      <circle cx={x} cy={y} r={r} fill={color} stroke="#fff" strokeWidth={2}
+      <circle cx={x} cy={y} r={r} fill={color} stroke={isLightColor(color) ? '#0d0d1a' : '#fff'} strokeWidth={2}
         className={styles.pieceCircle}
         style={{ ...posStyle, filter: `drop-shadow(0 0 ${isValid ? 9 : 4}px ${color})` }} />
       {isBlock && (

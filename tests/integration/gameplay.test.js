@@ -6,23 +6,37 @@ const {
   startServer, stopServer, waitForServer, makeClientFactory,
   waitForEvent, waitForState, makeRoom,
 } = require('./harness');
+const { getValidMoves } = require('../../game-logic');
 
 const PORT = 4447;
 
 /**
- * Roll dice from `roller` until the turn actually leaves them for `nextSlot`.
- * With every piece still in the yard, only a 6 has a legal move — and a 6
- * earns a bonus roll, so it keeps the turn right where it is. Everything else
- * is a dead roll that hands the turn on. Retried rather than asserted on the
- * first try since the die is genuinely random; a stall this long across many
- * rolls is astronomically unlikely, not a real failure mode.
+ * Play `rollerSlot`'s turn out until the turn actually leaves them for
+ * `nextSlot`. A non-6 early on is a dead roll (or a single forced move) and
+ * hands the turn on. A 6 does NOT: it earns a bonus roll, and with several
+ * pieces able to move it's a genuine choice the server waits on forever —
+ * so this makes that move itself, then rolls again.
+ *
+ * REGRESSION: this used to just roll again after a 6, without ever moving.
+ * The server (correctly) kept waiting for the choice, so roughly one run in
+ * six hung until the test timed out.
  */
-async function advanceTurnTo(roller, watcher, nextSlot) {
+async function advanceTurnTo(roller, watcher, rollerSlot, nextSlot) {
   for (let attempt = 0; attempt < 25; attempt++) {
-    const next = waitForState(watcher, (s) => s.currentPlayerIndex === nextSlot || s.diceRolled === false);
+    const afterRoll = waitForState(watcher, (s) => s.diceRolled === true);
+    const rolled = waitForEvent(roller, 'dice_rolled');
     roller.emit('roll_dice');
-    const state = await next;
-    if (state.currentPlayerIndex === nextSlot) return state;
+    const { value } = await rolled;
+    const state = await afterRoll;
+
+    if (value !== 6) {
+      return waitForState(watcher, (s) => s.currentPlayerIndex === nextSlot, 15000);
+    }
+    const valid = getValidMoves(state.players[rollerSlot], value, state);
+    const settled = waitForState(watcher, (s) => !s.diceRolled && s.currentPlayerIndex === rollerSlot, 15000);
+    // One legal move gets played for them by the server; more is a choice.
+    if (valid.length > 1) roller.emit('move_piece', { pieceId: valid[0] });
+    await settled;
   }
   throw new Error(`turn never advanced to slot ${nextSlot}`);
 }
@@ -35,6 +49,7 @@ beforeAll(async () => {
     LOBBY_RECONNECT_GRACE_MS: '400',
     AUTO_MOVE_DELAY_MS: '150',
     SKIP_NOTICE_MS:     '150',
+    FORCED_MOVE_DELAY_MS: '150',
   });
   await waitForServer(PORT);
   ({ connect, closeAll } = makeClientFactory(PORT));
@@ -206,7 +221,7 @@ describe('host controls', () => {
     // The host can't kick themselves, so to test removing whoever currently
     // holds the turn, the turn first has to actually leave the host (slot 0,
     // who always goes first).
-    await advanceTurnTo(host, host, 1);
+    await advanceTurnTo(host, host, 0, 1);
 
     const settled = waitForState(guests[1], (s) => s.players[1].isFinished);
     host.emit('kick_player', { slotIndex: 1 });

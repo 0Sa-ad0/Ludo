@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { STORAGE_CREATE, STORAGE_ROOM, STORAGE_NAME } from '@/lib/constants';
 import { MIN_PLAYERS, MAX_PLAYERS } from '@/lib/board';
 import { useStoredPreference } from '@/lib/useStoredPreference';
+import type { StoredCreate } from '@/lib/types';
 import styles from './page.module.css';
 
 const PLAYER_COUNT_OPTIONS = Array.from(
@@ -21,6 +22,7 @@ export default function LobbyPage() {
   const [roomCode, setRoomCode] = useState('');
   const [password, setPassword] = useState('');
   const [usePassword, setUsePassword] = useState(false);
+  const [teamMode, setTeamMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [publicUrl, setPublicUrl] = useState('');
@@ -43,11 +45,13 @@ export default function LobbyPage() {
     setLoading(true);
     remember(name);
     // The socket create happens on the game page; this just carries the intent.
-    sessionStorage.setItem(STORAGE_CREATE, JSON.stringify({
+    const intent: StoredCreate = {
       playerName: name,
       playerCount,
       password: usePassword ? password : '',
-    }));
+      teamMode: teamMode && playerCount === 4,
+    };
+    sessionStorage.setItem(STORAGE_CREATE, JSON.stringify(intent));
     router.push('/game/create');
   }
 
@@ -128,14 +132,29 @@ export default function LobbyPage() {
                   aria-pressed={playerCount === n}
                 >
                   {n}
-                  {n >= 5 && <span className={styles.hexTag}>HEX</span>}
                 </button>
               ))}
             </div>
             {playerCount >= 5 && (
-              <p className={styles.hint}>⬡ Hexagonal board will be used for {playerCount} players</p>
+              <p className={styles.hint}>A bigger star-shaped board is used for {playerCount} players.</p>
             )}
           </div>
+
+          {playerCount === 4 && (
+            <div className={styles.field}>
+              <label className={styles.checkboxRow}>
+                <input type="checkbox" id="chk-teams" checked={teamMode}
+                  onChange={(e) => setTeamMode(e.target.checked)} className={styles.checkbox} />
+                <span>Play in teams (2 vs 2)</span>
+              </label>
+              {teamMode && (
+                <p className={styles.hint}>
+                  Partners sit opposite each other and can&apos;t capture each other.
+                  Your team wins when both of you get all your pieces home.
+                </p>
+              )}
+            </div>
+          )}
 
           <div className={styles.field}>
             <label className={styles.checkboxRow}>

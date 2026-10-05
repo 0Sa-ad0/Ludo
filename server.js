@@ -17,6 +17,7 @@ const {
   getValidMoves, applyMove, pickAutoMove, rollDie,
   advanceTurn, clearDice, skipTurn, finalizeIfOver, registerRoll,
   isValidPlayerCount, MIN_PLAYERS, MAX_PLAYERS,
+  TEAM_SIZE, pickTeamForNewPlayer, arrangeTeamSeats,
 } = require('./game-logic');
 
 const dev  = process.env.NODE_ENV !== 'production';
@@ -83,7 +84,11 @@ const AUTO_MOVE_DELAY_MS = Number(process.env.AUTO_MOVE_DELAY_MS) || 1_200;
 // pointless click; this brief pause just lets the dice animation land
 // first, so the piece doesn't appear to jump before the roll registers.
 const FORCED_MOVE_DELAY_MS = Number(process.env.FORCED_MOVE_DELAY_MS) || 5_000;
-const SKIP_NOTICE_MS     = Number(process.env.SKIP_NOTICE_MS)     || 1_400;
+// Must outlast the client's dice animation (DICE_ROLL_MIN_MS, 3s): the turn
+// change rides on the next game_state, and at the old 1.4s it arrived while
+// the roller's own dice was still spinning — the header switched to the next
+// player, giving away that the roll was a dud before the dice even landed.
+const SKIP_NOTICE_MS     = Number(process.env.SKIP_NOTICE_MS)     || 3_600;
 const ROOM_TTL_MS        = Number(process.env.ROOM_TTL_MS)        || 2 * 60 * 60 * 1000;
 const SWEEP_INTERVAL_MS  = 5 * 60 * 1000;
 
@@ -498,7 +503,7 @@ Promise.all([app.prepare(), initDb()]).then(async () => {
     socket.on('ping', (clientTime) => socket.emit('ping_ack', clientTime));
 
     // ── Create room ─────────────────────────────────────────────────────────
-    socket.on('create_room', async ({ playerCount, playerName, password } = {}) => {
+    socket.on('create_room', async ({ playerCount, playerName, password, teamMode } = {}) => {
       const name = cleanName(playerName);
       const count = Number(playerCount);
       if (!name) return fail('Enter your name');
@@ -506,17 +511,19 @@ Promise.all([app.prepare(), initDb()]).then(async () => {
         return fail(`Player count must be between ${MIN_PLAYERS} and ${MAX_PLAYERS}`);
       }
       if (password != null && typeof password !== 'string') return fail('Invalid password');
+      if (teamMode === true && count !== TEAM_SIZE * 2) return fail('Team games need exactly 4 players');
 
       let roomCode = generateRoomCode();
       while (gameRooms.has(roomCode)) roomCode = generateRoomCode();
 
       const passwordHash = password ? await bcrypt.hash(password, 10) : null;
-      const state = createInitialState(roomCode, count, passwordHash);
+      const state = createInitialState(roomCode, count, passwordHash, teamMode === true);
       touch(state);
 
       const player = createPlayer(state.id, name, state.colorOrder[0], 0);
       player.socketId = socket.id;
       player.isConnected = true;
+      if (state.teamMode) player.team = 0;
       state.players.push(player);
       gameRooms.set(roomCode, state);
 
@@ -630,6 +637,7 @@ Promise.all([app.prepare(), initDb()]).then(async () => {
       const player = createPlayer(state.id, name, state.colorOrder[slotIndex], slotIndex);
       player.socketId    = socket.id;
       player.isConnected = true;
+      if (state.teamMode) player.team = pickTeamForNewPlayer(state);
       state.players.push(player);
       touch(state);
 
@@ -666,12 +674,31 @@ Promise.all([app.prepare(), initDb()]).then(async () => {
       const { roomCode, state, player } = ctx;
       if (!player.isHost)             return fail('Only the host can start the game');
       if (state.status !== 'waiting') return fail('Game already started');
+      if (state.teamMode)             return fail('A team game starts on its own once all 4 players are in');
       if (state.players.length < MIN_PLAYERS) return fail(`Need at least ${MIN_PLAYERS} players`);
 
       // Shrink the room to who actually turned up — this also picks the board,
       // so a 6-player room started with 3 correctly plays on the square board.
       state.playerCount = state.players.length;
       await startGame(roomCode, state);
+    });
+
+    // ── 2v2: switch team in the lobby ───────────────────────────────────────
+    socket.on('choose_team', async ({ team } = {}) => {
+      const ctx = context();
+      if (!ctx) return;
+      const { roomCode, state, player } = ctx;
+      if (!state.teamMode)            return fail('This room is not a team game');
+      if (state.status !== 'waiting') return fail('Teams are locked once the game starts');
+      if (team !== 0 && team !== 1)   return fail('Invalid team');
+      if (player.team === team)       return;
+      if (state.players.filter((p) => p.team === team).length >= TEAM_SIZE) {
+        return fail('That team is full');
+      }
+      player.team = team;
+      touch(state);
+      broadcastState(io, roomCode, state);
+      await saveGameState(state);
     });
 
     // ── Host: remove someone ────────────────────────────────────────────────
@@ -705,6 +732,12 @@ Promise.all([app.prepare(), initDb()]).then(async () => {
 
       if (state.status !== 'playing') return fail('Cannot remove players now');
       if (target.isFinished)          return fail('That player is already out');
+      // A removed partner stops counting toward the team's win — so a host
+      // who's already home could remove their own partner to win on the
+      // spot. A host can only remove players from the other team.
+      if (state.teamMode && target.team === player.team) {
+        return fail("You can't remove your own partner");
+      }
 
       // Mid-game the seat can't just be spliced out — every other player's
       // slot, pieces, and colour are keyed by index, and renumbering them
@@ -921,10 +954,8 @@ Promise.all([app.prepare(), initDb()]).then(async () => {
       // person to come back (armTurn already leaves a connected-but-idle
       // player alone indefinitely; a disconnected one with isAuto still
       // false gets exactly the same treatment, since nothing here ever sets
-      // it true). NOTE: kick_player currently only works pre-start
-      // ("Cannot remove players once the game has started") — so right now
-      // there is genuinely no way to move on if someone never comes back
-      // mid-game. Flagged for the user rather than silently assumed away.
+      // it true). If someone genuinely never comes back, the host removes
+      // them with kick_player, which forfeits their seat.
     });
   });
 
@@ -973,6 +1004,16 @@ Promise.all([app.prepare(), initDb()]).then(async () => {
   }
 
   async function startGame(roomCode, state) {
+    if (state.teamMode) {
+      // Seats were join order until now; partners have to end up opposite.
+      // Every socket gets its new slot before the game_started below.
+      // Everyone keeps the colour they saw in the lobby — only seats move.
+      const colorById = new Map(state.players.map((p) => [p.id, p.colorIndex]));
+      arrangeTeamSeats(state);
+      reindexPlayers(state);
+      for (const p of state.players) p.colorIndex = colorById.get(p.id);
+      resyncIndices(io, roomCode, state);
+    }
     state.status = 'playing';
     state.currentPlayerIndex = 0;
     touch(state);

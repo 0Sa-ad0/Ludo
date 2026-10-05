@@ -45,6 +45,8 @@ export const getWalkSteps    = rules.getWalkSteps as (fromPath: number, toPath: 
 export const wouldCaptureAt  = rules.wouldCaptureAt as (
   trackIndex: number, playerIndex: number, players: Player[], pc: number,
 ) => boolean;
+/** A player's side: their team in a 2v2 game, otherwise just themselves. */
+export const sideOf          = rules.sideOf as (player: { slotIndex: number; team?: number | null }) => string;
 export const hexCorner       = rules.hexCorner as (k: number, arms: number) => Point;
 /** A hex board's track cells, walked clockwise; length varies with player count (5-arm vs 6-arm). */
 export const getHexTrack     = rules.getHexTrack as (pc: number) => Point[];

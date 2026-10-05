@@ -2,12 +2,12 @@
 
 import { useMemo } from 'react';
 import type { GameState, Piece, Player, Point, WalkJob } from '@/lib/types';
-import { PLAYER_COLORS } from '@/lib/constants';
+import { PLAYER_COLORS, TEAM_NAMES, isLightColor as isLight } from '@/lib/constants';
 import {
   SQUARE_CELL as CELL, SQUARE_SIZE as SIZE,
   SQUARE_TRACK, SQUARE_HOME_COLS, SQUARE_HOME_QUADRANTS,
   getLoopLen, isOnTrack, pathToTrack, isSafeSquare,
-  getValidMoves, squareArm, wouldCaptureAt,
+  getValidMoves, squareArm, wouldCaptureAt, sideOf,
 } from '@/lib/board';
 import { useWalkAnimation } from '@/lib/useWalkAnimation';
 import styles from './SquareBoard.module.css';
@@ -239,6 +239,7 @@ export default function SquareBoard({
                 style={{ userSelect: 'none' }}
               >
                 {player.name.length > 12 ? `${player.name.slice(0, 11)}…` : player.name}
+                {player.team != null && ` · ${TEAM_NAMES[player.team].slice(-1)}`}
               </text>
             )}
             {!player && (
@@ -394,7 +395,7 @@ export default function SquareBoard({
               r={many ? 11 : 14}
               isValid={validMoveIds.has(piece.id)}
               isCapturing={capturingPieces.has(piece.id)}
-              isBlock={many && items.every((it) => it.player.slotIndex === player.slotIndex)}
+              isBlock={many && items.every((it) => sideOf(it.player) === sideOf(player))}
               label={`${player.name} piece ${piece.pieceIndex + 1}`}
               onActivate={onPieceClick}
             />
@@ -478,12 +479,17 @@ function PieceMarker({
       className={isCapturing ? styles.captureFlash : undefined}
     >
       {isValid && (
-        <circle cx={x} cy={y} r={r + 6} fill="rgba(255,255,255,0.1)"
-          stroke={color} strokeWidth={2} className={styles.validGlow} />
+        <>
+          {/* Invisible, larger tap target — the visible piece alone is
+              small on a phone. Only for pieces you can actually move. */}
+          <circle cx={x} cy={y} r={r + 12} fill="transparent" />
+          <circle cx={x} cy={y} r={r + 6} fill="rgba(255,255,255,0.1)"
+            stroke={color} strokeWidth={2} className={styles.validGlow} />
+        </>
       )}
       <circle
         cx={x} cy={y} r={r}
-        fill={color} stroke="#fff" strokeWidth={2}
+        fill={color} stroke={isLight(color) ? '#0d0d1a' : '#fff'} strokeWidth={2}
         className={styles.pieceCircle}
         style={{ ...posStyle, filter: `drop-shadow(0 0 ${isValid ? 10 : 4}px ${color})` }}
       />

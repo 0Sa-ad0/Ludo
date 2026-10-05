@@ -29,6 +29,8 @@ export interface Player {
   isFinished: boolean;
   finishRank: number | null;
   isHost: boolean;
+  /** 0 or 1 in a 2v2 game; null otherwise. */
+  team: number | null;
   pieces: Piece[];
 }
 
@@ -45,6 +47,11 @@ export interface GameState {
   lastMove: MoveEvent | null;
   winner: number | null;
   rankings: number[];   // player slot indices, in finish order
+  teamMode?: boolean;
+  /** Set when a 2v2 game ends. */
+  winningTeam?: number | null;
+  /** Slots the host removed mid-game, in the order it happened. */
+  kickedOrder?: number[];
   createdAt?: number;
   lastActivity?: number;
 }
@@ -114,9 +121,10 @@ export interface ServerToClientEvents {
 }
 
 export interface ClientToServerEvents {
-  create_room: (payload: { playerCount: number; playerName: string; password?: string }) => void;
+  create_room: (payload: { playerCount: number; playerName: string; password?: string; teamMode?: boolean }) => void;
   join_room:   (payload: { roomCode: string; playerName: string; password?: string }) => void;
   start_game:  () => void;
+  choose_team: (payload: { team: number }) => void;
   kick_player: (payload: { slotIndex: number }) => void;
   leave_room:  () => void;
   roll_dice:   () => void;
@@ -142,4 +150,10 @@ export interface WalkJob {
 export interface StoredJoin {
   playerName: string;
   password?: string;
+}
+
+/** What the lobby hands the game page when creating a room. */
+export interface StoredCreate extends StoredJoin {
+  playerCount: number;
+  teamMode?: boolean;
 }

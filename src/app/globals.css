@@ -291,6 +291,16 @@ svg :focus-visible { outline-offset: 0; }
   border-radius: 50%;
   animation: pulse-glow 1.5s infinite;
 }
+.ping-inline {
+  position: static;
+  z-index: auto;
+  min-height: 40px;
+  min-width: 40px;
+  justify-content: center;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+}
+.ping-inline .ping-dot { width: 9px; height: 9px; }
 .ping-good   { color: var(--green);  } .ping-good   .ping-dot { background: var(--green); }
 .ping-fair   { color: var(--yellow); } .ping-fair   .ping-dot { background: var(--yellow); }
 .ping-bad    { color: var(--pink);   } .ping-bad    .ping-dot { background: var(--pink); }

@@ -21,14 +21,12 @@ Be the **first player** to move all **4 of your pieces** from your home base, ar
 
 ### Player Colours
 
-| Slot | Colour |
-|---|---|
-| Player 1 | 🩷 Neon Pink |
-| Player 2 | 💙 Electric Blue |
-| Player 3 | 💚 Acid Green |
-| Player 4 | 🟠 Hot Orange |
-| Player 5 | 💜 Neon Purple |
-| Player 6 | 💛 Neon Yellow |
+Six colours, handed out in a random order per room: 🩷 Neon Pink, 💙 Electric
+Blue, 💚 Acid Green, 🟠 Hot Orange, 💜 Neon Purple, 🤍 Ice White.
+
+They're picked to stay easy to tell apart, including for colour-blind
+players — an automated test fails if any two drift too close. (Neon Yellow
+was dropped for that reason: it was nearly identical to Acid Green.)
 
 Unused corners/arms are greyed out and labelled EMPTY.
 
@@ -147,6 +145,28 @@ Unused corners/arms are greyed out and labelled EMPTY.
 
 ---
 
+## 🤝 Teams (2 vs 2)
+
+An option when creating a **4-player** room.
+
+- **Picking teams:** new players are put on the smaller team; anyone can
+  switch to the other team in the lobby while it has an open seat
+- The game starts automatically once all 4 are in (no early start)
+- **Partners sit opposite each other**, so turns alternate between the teams
+- **Partners never capture each other**
+- **Team blocks:** two pieces of the same team on one square — yours and your
+  partner's count too — can't be captured
+- **Winning:** your team wins when **both** of you have all your pieces home.
+  If you finish first, you just wait while your partner plays on
+- **The host can't remove their own partner** mid-game — otherwise a host who
+  was already home could remove their partner and win on the spot
+- **If the host removes someone from the other team:** their partner keeps
+  playing alone, and that team wins if the partner gets all their own pieces
+  home. If a whole team is removed, the other team wins
+- Both winners get a win on the leaderboard
+
+---
+
 ## 🌐 Multiplayer & Connection
 
 - Each player joins on their own device
@@ -154,12 +174,15 @@ Unused corners/arms are greyed out and labelled EMPTY.
 - Opening the link asks for your name, then drops you straight into the room
 - An optional room password can be set
 
-### Host controls (lobby only)
+### Host controls
 
-- **Start early** — begin with however many players have turned up (minimum 2).
-  The board resizes to match, so a 6-seat room started with 3 plays on the
-  square board.
-- **Remove a player** — free a seat; remaining players close up the gap
+- **Start early** (lobby) — begin with however many players have turned up
+  (minimum 2). The board resizes to match, so a 6-seat room started with 3
+  plays on the square board. Not available for team games.
+- **Remove a player** (lobby) — free a seat; remaining players close up the gap
+- **Remove a player** (mid-game, 👥 button) — for someone who's never coming
+  back: they forfeit, their pieces stay where they are, their turns are
+  skipped, and they rank below everyone who stayed
 
 ### If a player disconnects
 
@@ -174,9 +197,10 @@ room can fill up.
 **Once the game has started:** there is no timeout at all. A disconnected
 player's turn is simply held — the game waits, however long it takes — and
 they pick up exactly where they left off, with the same room code and the
-same name, whenever they reconnect. Nothing auto-plays a real player's turns
-for them; if someone is genuinely gone for good, the rest of the table has
-to decide how to handle it themselves.
+same name, whenever they reconnect — including after switching networks (say,
+WiFi to mobile data), as long as they joined through the ngrok link. Nothing
+auto-plays a real player's turns for them; if someone is genuinely gone for
+good, the host can remove them (see Host controls).
 
 ### If a player just goes idle
 
@@ -197,16 +221,28 @@ from it.
 
 ## 📡 Connection Quality
 
-- A ping indicator sits in the top-right of every screen that has a connection
-- Updates every second; green → yellow → red as latency rises
+- A coloured dot shows connection quality, updated every second:
+  green → yellow → red as latency rises
+- In a game it sits in the top bar and only shows a number when the
+  connection is slow or down
 
 ---
 
-## 🎛️ In-game controls
+## 🎛️ In-game screen
+
+- **Dice bar** (bottom) — whose turn it is, in full, plus what to do next.
+  A roll is never given away early: until your dice stops spinning, nothing
+  on screen changes to the next player
+- **Player list** — beside the board on wide screens, under it on phones:
+  whose turn it is, who's offline, and how many pieces each player (or team)
+  has home
+- On the 5–6 player board, the board turns so **your own home is at the
+  bottom**, like on the square board
 
 | Control | What it does |
 |---|---|
 | 🔊 / 🔇 | Mute or unmute sound (remembered on this device) |
+| 👥 | Host only: remove a player who's never coming back |
 | 🚪 | Leave the game (mid-game your seat is handed to AUTO) |
 
 ---
@@ -228,4 +264,4 @@ from it.
 
 ---
 
-*Last updated: September 2026*
+*Last updated: October 2026*

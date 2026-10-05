@@ -1,0 +1,107 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255,255,255,0.07);
+  background: rgba(255,255,255,0.03);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, background 0.3s ease;
+}
+
+.turn {
+  border-color: var(--c);
+  background: color-mix(in srgb, var(--c) 10%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--c) 45%, transparent);
+}
+
+.out { opacity: 0.45; }
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--c);
+  box-shadow: 0 0 6px var(--c);
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.86rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.badge { font-size: 0.75rem; }
+
+.tag {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.55rem;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+  flex-shrink: 0;
+}
+
+.progress { display: flex; gap: 3px; flex-shrink: 0; }
+.pip {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--c) 60%, transparent);
+}
+.pipOn { background: var(--c); }
+
+.note {
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+.offline { color: var(--orange); }
+.noteIcon { display: none; font-size: 0.75rem; flex-shrink: 0; }
+
+.team { display: flex; flex-direction: column; gap: 6px; }
+.teamHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin: 0;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--text);
+}
+.teamScore { color: var(--text-dim); font-family: inherit; }
+
+/* Phones: two compact columns, so four players fit in two short rows
+   under the board instead of a long list. */
+@media (max-width: 899px) {
+  .list { grid-template-columns: 1fr 1fr; }
+  .row { min-height: 36px; padding: 5px 8px; gap: 6px; }
+  .name { font-size: 0.8rem; }
+  .note { display: none; }
+  .noteIcon { display: inline; }
+  .row .tag { display: none; }
+}

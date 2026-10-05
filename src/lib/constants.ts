@@ -11,14 +11,29 @@ export interface PlayerColor {
   homeColumn: string;
 }
 
+// Chosen by measured perceptual distance (OKLab, plus a deuteranopia
+// simulation), not by eye — see tests/palette.test.js, which fails if any two
+// drift too close. Yellow was replaced (it was near-identical to Acid Green
+// for colour-blind players) and Pink shifted off Orange, previously the
+// closest pair of all.
 export const PLAYER_COLORS: PlayerColor[] = [
-  { name: 'Neon Pink',     hex: '#ff2d78', glow: 'rgba(255,45,120,0.6)', home: '#ff2d7820', homeColumn: '#ff2d7840' },
-  { name: 'Electric Blue', hex: '#00c8ff', glow: 'rgba(0,200,255,0.6)',  home: '#00c8ff20', homeColumn: '#00c8ff40' },
-  { name: 'Acid Green',    hex: '#39ff14', glow: 'rgba(57,255,20,0.6)',  home: '#39ff1420', homeColumn: '#39ff1440' },
-  { name: 'Hot Orange',    hex: '#ff6b00', glow: 'rgba(255,107,0,0.6)',  home: '#ff6b0020', homeColumn: '#ff6b0040' },
-  { name: 'Neon Purple',   hex: '#bf00ff', glow: 'rgba(191,0,255,0.6)',  home: '#bf00ff20', homeColumn: '#bf00ff40' },
-  { name: 'Neon Yellow',   hex: '#ffe600', glow: 'rgba(255,230,0,0.6)',  home: '#ffe60020', homeColumn: '#ffe60040' },
+  { name: 'Neon Pink',     hex: '#ff2d9b', glow: 'rgba(255,45,155,0.6)',  home: '#ff2d9b20', homeColumn: '#ff2d9b40' },
+  { name: 'Electric Blue', hex: '#00c8ff', glow: 'rgba(0,200,255,0.6)',   home: '#00c8ff20', homeColumn: '#00c8ff40' },
+  { name: 'Acid Green',    hex: '#39ff14', glow: 'rgba(57,255,20,0.6)',   home: '#39ff1420', homeColumn: '#39ff1440' },
+  { name: 'Hot Orange',    hex: '#ff6b00', glow: 'rgba(255,107,0,0.6)',   home: '#ff6b0020', homeColumn: '#ff6b0040' },
+  { name: 'Neon Purple',   hex: '#bf00ff', glow: 'rgba(191,0,255,0.6)',   home: '#bf00ff20', homeColumn: '#bf00ff40' },
+  { name: 'Ice White',     hex: '#f2f2f7', glow: 'rgba(242,242,247,0.6)', home: '#f2f2f720', homeColumn: '#f2f2f740' },
 ];
+
+export const TEAM_NAMES = ['Team A', 'Team B'] as const;
+
+/** True for a near-white colour — a white outline vanishes against it, so
+ *  pieces of that colour get a dark one instead. */
+export function isLightColor(hex: string): boolean {
+  const n = parseInt(hex.slice(1, 7), 16);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.85;
+}
 
 /** Colour for a slot that nobody has taken yet. */
 export const EMPTY_SLOT_COLOR = 'rgba(255,255,255,0.16)';

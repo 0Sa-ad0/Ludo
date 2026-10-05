@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
 import type {
-  GameState, DiceRolledPayload, PieceMovedPayload, TurnSkippedPayload, StoredJoin,
+  GameState, DiceRolledPayload, PieceMovedPayload, TurnSkippedPayload, StoredJoin, StoredCreate,
   ForcedMovePendingPayload, Piece, WalkJob,
 } from '@/lib/types';
 import {
@@ -22,6 +22,7 @@ import DiceRoller from '@/components/Dice/DiceRoller';
 import WinScreen from '@/components/WinScreen/WinScreen';
 import WaitingRoom from '@/components/WaitingRoom/WaitingRoom';
 import JoinPrompt from '@/components/JoinPrompt/JoinPrompt';
+import PlayerPanel from '@/components/PlayerPanel/PlayerPanel';
 import styles from './game.module.css';
 
 interface GamePageProps {
@@ -51,6 +52,11 @@ export default function GamePage({ params }: GamePageProps) {
   const [error, setError]             = useState('');
   const [notice, setNotice]           = useState('');
   const [rollingDice, setRolling]     = useState(false);
+  // Who the dice currently spinning belongs to. While it spins, the UI keeps
+  // showing it as THEIR turn — the server's next game_state (a dead roll
+  // passing the turn on) can land before the animation does, and switching
+  // the turn display early would give the result away.
+  const [rollerIndex, setRollerIndex] = useState<number | null>(null);
   // The dice's displayed value, frozen at reveal time — decoupled from the
   // live gameState.diceValue, which the server can clear (a skip, a move)
   // well before the local roll animation's delay is actually up.
@@ -113,7 +119,7 @@ export default function GamePage({ params }: GamePageProps) {
   }, []);
 
   // ── Decide up front whether we have enough to join ──────────────────────
-  const [joinInfo, setJoinInfo] = useState<(StoredJoin & { playerCount?: number }) | null>(null);
+  const [joinInfo, setJoinInfo] = useState<(StoredJoin & Partial<StoredCreate>) | null>(null);
 
   // The base to build the share link from. `window.location.origin` is wrong
   // whenever the host opened the page via localhost — that URL means nothing
@@ -136,7 +142,7 @@ export default function GamePage({ params }: GamePageProps) {
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const stored = isCreate
-      ? readStored<StoredJoin & { playerCount: number }>(STORAGE_CREATE)
+      ? readStored<StoredCreate>(STORAGE_CREATE)
       : readStored<StoredJoin>(STORAGE_ROOM(roomId));
 
     if (stored?.playerName) { setJoinInfo(stored); setNeedsName(false); }
@@ -177,6 +183,7 @@ export default function GamePage({ params }: GamePageProps) {
           playerName: joinInfo.playerName,
           playerCount: joinInfo.playerCount ?? 4,
           password: joinInfo.password ?? '',
+          teamMode: !!joinInfo.teamMode,
         });
       } else {
         socket.emit('join_room', {
@@ -241,9 +248,10 @@ export default function GamePage({ params }: GamePageProps) {
     /** Name a player by slot from the freshest state we've received. */
     const nameOf = (index: number) => stateRef.current?.players[index]?.name;
 
-    socket.on('dice_rolled', ({ value, isAuto }: DiceRolledPayload) => {
+    socket.on('dice_rolled', ({ playerIndex, value, isAuto }: DiceRolledPayload) => {
       playRef.current.dice();
 
+      setRollerIndex(playerIndex);
       if (isAuto) { setRolling(false); setRevealedValue(value); return; }
 
       // rollStartRef is only set by MY OWN tap (see handleRoll) — for
@@ -445,11 +453,44 @@ export default function GamePage({ params }: GamePageProps) {
   }, [roomCode, roomId, isCreate, publicBase.mdnsUrl]);
 
   const myPlayer  = gameState?.players[myPlayerIndex];
+  // The real turn — what decides whether I'm allowed to roll.
   const isMyTurn  = gameState?.status === 'playing' && gameState.currentPlayerIndex === myPlayerIndex;
-  useTurnNotifications(!!isMyTurn, roomCode, play.turn);
+  // The turn as SHOWN: held on the roller until their dice has landed.
+  const shownTurnIndex = rollingDice && rollerIndex !== null
+    ? rollerIndex
+    : (gameState?.currentPlayerIndex ?? 0);
+  const isMyShownTurn = gameState?.status === 'playing' && shownTurnIndex === myPlayerIndex;
+  useTurnNotifications(!!isMyShownTurn, roomCode, play.turn);
   const isHex     = !!gameState && gameState.playerCount >= 5;
-  const current   = gameState?.players[gameState.currentPlayerIndex];
+  const current   = gameState?.players[shownTurnIndex];
   const turnColor = current ? PLAYER_COLORS[current.colorIndex]?.hex : '#888';
+
+  // Who the host may remove mid-game. Never their own partner in a team
+  // game — the server refuses that too (it would hand the host a free win).
+  const removable = (gameState?.players ?? []).filter((p) =>
+    p.slotIndex !== myPlayerIndex && !p.isFinished
+    && !(gameState?.teamMode && p.team === myPlayer?.team));
+
+  // A dud roll stays on the dice after the turn has moved on — it must say
+  // whose roll it was, or "Rolled 5" under "Nokib's turn" reads as Nokib's.
+  const roller = rollerIndex !== null ? gameState?.players[rollerIndex] : undefined;
+  const staleRoll = !rollingDice && revealedValue !== null && !!roller && rollerIndex !== shownTurnIndex;
+  const diceColor = staleRoll ? PLAYER_COLORS[roller.colorIndex]?.hex ?? turnColor : turnColor;
+  const rolledBy = staleRoll ? (rollerIndex === myPlayerIndex ? 'You' : roller.name) : null;
+
+  const turnLabel = (() => {
+    if (!gameState || gameState.status !== 'playing') return '';
+    if (myPlayer?.isFinished) {
+      if (gameState.kickedOrder?.includes(myPlayerIndex)) return 'You were removed';
+      return gameState.teamMode
+        ? '✓ All your pieces are home — waiting for your partner'
+        : `👑 You finished #${myPlayer.finishRank} — watching`;
+    }
+    if (isMyShownTurn) return '⚡ Your turn';
+    const name = current?.name ?? '…';
+    const partner = gameState.teamMode && current && myPlayer && current.team === myPlayer.team;
+    return partner ? `${name}'s turn (your partner)` : `${name}'s turn`;
+  })();
 
   // ── Actions ─────────────────────────────────────────────────────────────
   const handleRoll = useCallback(() => {
@@ -457,6 +498,7 @@ export default function GamePage({ params }: GamePageProps) {
     if (!socket || !isMyTurn || gameState?.diceRolled || rollingDice) return;
     myRollPendingRef.current = true;
     rollStartRef.current = Date.now();
+    setRollerIndex(myPlayerIndex);
     setRolling(true);
     setRevealedValue(null);
     socket.emit('roll_dice');
@@ -469,7 +511,7 @@ export default function GamePage({ params }: GamePageProps) {
       setRolling(false);
       myRollPendingRef.current = false;
     }, ROLL_TIMEOUT_MS);
-  }, [isMyTurn, gameState?.diceRolled, rollingDice]);
+  }, [isMyTurn, gameState?.diceRolled, rollingDice, myPlayerIndex]);
 
   const handleMove = useCallback((pieceId: string) => {
     socketRef.current?.emit('move_piece', { pieceId });
@@ -483,6 +525,9 @@ export default function GamePage({ params }: GamePageProps) {
   }, [roomCode, router]);
 
   const handleStart = useCallback(() => socketRef.current?.emit('start_game'), []);
+  const handleChooseTeam = useCallback((team: number) => {
+    socketRef.current?.emit('choose_team', { team });
+  }, []);
   const handleKick  = useCallback((slotIndex: number) => {
     socketRef.current?.emit('kick_player', { slotIndex });
   }, []);
@@ -550,11 +595,13 @@ export default function GamePage({ params }: GamePageProps) {
           gameState={gameState}
           roomCode={roomCode}
           shareUrl={shareUrl}
+          shareIsPublic={!!publicBase.url}
           stableUrl={stableUrl}
           myPlayerIndex={myPlayerIndex}
           onStart={handleStart}
           onKick={handleKick}
           onLeave={handleLeave}
+          onChooseTeam={handleChooseTeam}
         />
       </Shell>
     );
@@ -562,34 +609,22 @@ export default function GamePage({ params }: GamePageProps) {
 
   return (
     <div className={styles.gamePage}>
-      <PingIndicator socket={socket} />
-
       {lostConnectionHint && <LostConnectionBanner hint={lostConnectionHint} />}
       {error  && <div className={styles.errorBanner}  data-testid="error-banner">{error}</div>}
       {notice && <div className={styles.noticeBanner} data-testid="capture-banner">{notice}</div>}
 
+      {/* Whose turn it is lives in the dice bar now — squeezed in here
+          between the room code and the buttons, it was cut down to
+          "Your …" on a phone. */}
       <div className={styles.topBar}>
         <div className={styles.roomInfo}>
           <span className={styles.roomLabel}>ROOM</span>
           <span className={`${styles.roomCode} font-orbitron`} data-testid="room-code">{roomCode}</span>
-        </div>
-
-        <div className={styles.turnInfo}>
-          <span
-            className={styles.turnText}
-            data-testid="turn-text"
-            data-my-turn={isMyTurn}
-            style={{ color: turnColor }}
-          >
-            {myPlayer?.isFinished
-              ? `👑 Spectating — finished #${myPlayer.finishRank}`
-              : isMyTurn
-                ? '⚡ Your Turn'
-                : `${current?.name ?? '…'}'s Turn`}
-          </span>
+          {gameState.teamMode && <span className={styles.modeTag}>2 vs 2</span>}
         </div>
 
         <div className={styles.topActions}>
+          <PingIndicator socket={socket} inline />
           <button
             className={styles.iconBtn}
             onClick={toggleMute}
@@ -614,11 +649,10 @@ export default function GamePage({ params }: GamePageProps) {
               {showKickMenu && (
                 <div className={styles.kickMenu} role="menu" data-testid="kick-menu">
                   <div className={styles.kickMenuTitle}>REMOVE A PLAYER</div>
-                  {gameState.players.filter((p) => p.slotIndex !== myPlayerIndex && !p.isFinished).length === 0 ? (
+                  {removable.length === 0 ? (
                     <div className={styles.kickMenuEmpty}>Nobody left to remove</div>
                   ) : (
-                    gameState.players
-                      .filter((p) => p.slotIndex !== myPlayerIndex && !p.isFinished)
+                    removable
                       .map((p) => (
                         <div key={p.id} className={styles.kickMenuItem}>
                           <span>{p.name}{!p.isConnected ? ' 🔌' : ''}</span>
@@ -652,13 +686,16 @@ export default function GamePage({ params }: GamePageProps) {
           {isHex ? (
             <HexBoard gameState={gameState} myPlayerIndex={myPlayerIndex}
               walkBatch={walkBatch} capturingPieces={capturing} onPieceClick={handleMove}
-              diceSettled={!rollingDice} highlightSlot={gameState.currentPlayerIndex} />
+              diceSettled={!rollingDice} highlightSlot={shownTurnIndex} />
           ) : (
             <SquareBoard gameState={gameState} myPlayerIndex={myPlayerIndex}
               walkBatch={walkBatch} capturingPieces={capturing} onPieceClick={handleMove}
-              diceSettled={!rollingDice} highlightSlot={gameState.currentPlayerIndex} />
+              diceSettled={!rollingDice} highlightSlot={shownTurnIndex} />
           )}
         </div>
+        <aside className={styles.sidePanel}>
+          <PlayerPanel gameState={gameState} myPlayerIndex={myPlayerIndex} turnIndex={shownTurnIndex} />
+        </aside>
       </div>
 
       <div className={styles.diceArea}>
@@ -669,7 +706,11 @@ export default function GamePage({ params }: GamePageProps) {
           waitingForMove={!!isMyTurn && gameState.diceRolled}
           onRoll={handleRoll}
           currentPlayerColor={turnColor}
+          diceColor={diceColor}
+          rolledBy={rolledBy}
           forcedMove={forcedMove}
+          turnLabel={turnLabel}
+          isMyTurn={!!isMyShownTurn}
         />
       </div>
 

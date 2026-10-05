@@ -127,13 +127,6 @@
   box-shadow: var(--glow-pink);
 }
 
-.hexTag {
-  font-size: 0.42rem;
-  letter-spacing: 0.05em;
-  color: var(--yellow);
-  font-family: 'Orbitron', sans-serif;
-}
-
 .hint {
   font-size: 0.75rem;
   color: var(--yellow);

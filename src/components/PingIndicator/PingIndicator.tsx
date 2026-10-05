@@ -4,9 +4,14 @@ import { useEffect, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import { PING_GOOD, PING_FAIR } from '@/lib/constants';
 
-interface Props { socket: Socket | null; }
+interface Props {
+  socket: Socket | null;
+  /** Sit inside the game's top bar as a small dot, instead of a fixed badge
+   *  in the corner. The number only shows when it's worth noticing. */
+  inline?: boolean;
+}
 
-export default function PingIndicator({ socket }: Props) {
+export default function PingIndicator({ socket, inline = false }: Props) {
   const [ping, setPing] = useState<number | null>(null);
   const [offline, setOffline] = useState(true);
 
@@ -55,16 +60,20 @@ export default function PingIndicator({ socket }: Props) {
     : 'ping-bad';
 
   const label = offline ? 'OFFLINE' : ping !== null ? `${ping}ms` : '…';
+  // A healthy connection needs no number — most players never look at it.
+  const showLabel = !inline || cls === 'ping-bad' || cls === 'ping-offline';
+  const description = `Connection: ${offline ? 'offline' : ping !== null ? `${ping}ms latency` : 'checking'}`;
 
   return (
     <div
-      className={`ping-indicator ${cls}`}
+      className={`ping-indicator ${inline ? 'ping-inline' : ''} ${cls}`}
       id="ping-indicator"
       role="status"
-      aria-label={`Connection: ${offline ? 'offline' : `${ping}ms latency`}`}
+      aria-label={description}
+      title={description}
     >
       <span className="ping-dot" />
-      <span>{label}</span>
+      {showLabel && <span>{label}</span>}
     </div>
   );
 }

@@ -15,6 +15,7 @@ const {
   SQUARE_TRACK_LEN, SQUARE_START, SQUARE_SAFE,
   getTrackLen, getLoopLen, getGoalPos, getSafeSet, getStartSq,
   isOnTrack, pathToTrack, getHomeEntrance, isValidPlayerCount, getValidMoves,
+  capturesAt,
 } = rules;
 
 function generateRoomCode() {
@@ -37,11 +38,15 @@ function shuffled(array) {
   return a;
 }
 
-function createInitialState(roomCode, playerCount, passwordHash) {
+function createInitialState(roomCode, playerCount, passwordHash, teamMode = false) {
   return {
     id:                   uuidv4(),
     roomCode,
     playerCount,
+    // 2v2: partners sit opposite (slots 0+2 vs 1+3) once the game starts —
+    // see arrangeTeamSeats. Each player carries `team` (0 or 1).
+    teamMode:             !!teamMode,
+    winningTeam:          null,
     passwordHash:         passwordHash || null,
     status:               'waiting',
     currentPlayerIndex:   0,
@@ -92,6 +97,7 @@ function createPlayer(gameId, name, colorIndex, slotIndex) {
     isFinished:  false,
     finishRank:  null,
     isHost:      slotIndex === 0,
+    team:        null,
     pieces,
   };
 }
@@ -167,6 +173,7 @@ function skipTurn(state, playerIndex) {
  * (most-recently-kicked ranks best among the forfeits).
  */
 function finalizeIfOver(state) {
+  if (state.teamMode) return finalizeTeamsIfOver(state);
   const active = state.players.filter((p) => !p.isFinished);
   if (active.length > 1) return state;
 
@@ -177,16 +184,89 @@ function finalizeIfOver(state) {
     state.rankings.push(last.slotIndex);
   }
 
+  // kickedOrder is left in place afterwards — the end screen reads it to
+  // mark who was removed rather than finishing.
   const kickedOrder = state.kickedOrder || [];
   for (let i = kickedOrder.length - 1; i >= 0; i--) {
     const player = state.players[kickedOrder[i]];
     player.finishRank = state.rankings.length + 1;
     state.rankings.push(player.slotIndex);
   }
-  state.kickedOrder = [];
 
   state.status = 'finished';
   state.winner = state.rankings.length ? state.rankings[0] : null;
+  return state;
+}
+
+/**
+ * 2v2: a team wins the moment every one of its members still in the game has
+ * all four pieces home. A partner the host removed doesn't count — the other
+ * keeps playing alone, and wins for the team by finishing their own pieces.
+ * A team with nobody left in the game at all loses outright.
+ *
+ * Winners both get finishRank 1 (that's what recordResults counts as a win),
+ * losers both get 2. Mutates.
+ */
+function finalizeTeamsIfOver(state) {
+  const kicked = new Set(state.kickedOrder || []);
+  const statusOf = (team) => {
+    const inGame = state.players.filter((p) => p.team === team && !kicked.has(p.slotIndex));
+    return {
+      gone: inGame.length === 0,
+      done: inGame.length > 0 && inGame.every((p) => p.pieces.every((pc) => pc.status === 'finished')),
+    };
+  };
+  const [a, b] = [statusOf(0), statusOf(1)];
+
+  let winningTeam = null;
+  if (a.done) winningTeam = 0;
+  else if (b.done) winningTeam = 1;
+  else if (a.gone && !b.gone) winningTeam = 1;
+  else if (b.gone && !a.gone) winningTeam = 0;
+  if (winningTeam === null) return state;
+
+  // Winners first, each team in the order its members actually finished.
+  const finishedOrder = state.rankings.slice();
+  const order = (team) => state.players
+    .filter((p) => p.team === team)
+    .sort((x, y) => {
+      const ix = finishedOrder.indexOf(x.slotIndex), iy = finishedOrder.indexOf(y.slotIndex);
+      return (ix < 0 ? Infinity : ix) - (iy < 0 ? Infinity : iy) || x.slotIndex - y.slotIndex;
+    });
+  const winners = order(winningTeam);
+  const losers  = order(1 - winningTeam);
+  for (const p of winners) { p.isFinished = true; p.finishRank = 1; }
+  for (const p of losers)  { p.isFinished = true; p.finishRank = 2; }
+
+  state.rankings    = [...winners, ...losers].map((p) => p.slotIndex);
+  state.winningTeam = winningTeam;
+  state.winner      = state.rankings[0];
+  state.status      = 'finished';
+  return state;
+}
+
+// ─── Teams (2v2) ─────────────────────────────────────────────────────────────
+
+const TEAM_SIZE = 2;
+
+/** New arrivals go to whichever team is shorter, so a full room is always 2 v 2. */
+function pickTeamForNewPlayer(state) {
+  const count = (team) => state.players.filter((p) => p.team === team).length;
+  return count(0) <= count(1) ? 0 : 1;
+}
+
+/**
+ * Seat partners opposite each other — on the square board slots 0+2 and 1+3
+ * face each other across the centre, and turns run 0,1,2,3, so this also
+ * makes the teams alternate turns. The host keeps slot 0. Only reorders
+ * `state.players`; the caller re-derives slot indices (reindexPlayers).
+ */
+function arrangeTeamSeats(state) {
+  const host   = state.players.find((p) => p.isHost) ?? state.players[0];
+  const mine   = state.players.filter((p) => p.team === host.team)
+    .sort((x, y) => Number(y === host) - Number(x === host));
+  const theirs = state.players.filter((p) => p.team !== host.team);
+  state.players = [mine[0], theirs[0], mine[1], theirs[1]];
   return state;
 }
 
@@ -208,7 +288,6 @@ function applyMove(state, playerIndex, pieceId, diceValue) {
 
   const pc      = s.playerCount;
   const goal    = getGoalPos(pc);
-  const safeSet = getSafeSet(pc);
 
   // ── Advance the piece ──────────────────────────────────────────────────
   if (piece.status === 'home') {
@@ -231,28 +310,22 @@ function applyMove(state, playerIndex, pieceId, diceValue) {
       player.isFinished = true;
       player.finishRank = s.rankings.length + 1;
       s.rankings.push(playerIndex);
-      if (s.winner === null) s.winner = playerIndex;
+      // In a team game one partner finishing isn't a win — the team wins
+      // together, decided in finalizeTeamsIfOver.
+      if (s.winner === null && !s.teamMode) s.winner = playerIndex;
     }
   }
 
   // ── Capture ────────────────────────────────────────────────────────────
+  // rules.capturesAt is the single capture rule (safe squares, blocks, and
+  // never capturing a teammate) — the board's move preview calls it too.
   const capturedPieces = []; // [{ id, playerName }]
   if (piece.status === 'active' && piece.trackPosition !== -1) {
-    const tp = piece.trackPosition;
-    if (!safeSet.has(tp)) {
-      for (const opp of s.players) {
-        if (opp.slotIndex === playerIndex) continue;
-        // Two or more pieces of one colour on a square form a block, which
-        // cannot be captured — so count first, then decide.
-        const stacked = opp.pieces.filter((p) => p.status === 'active' && p.trackPosition === tp);
-        if (stacked.length >= 2) continue;
-        for (const op of stacked) {
-          capturedPieces.push({ id: op.id, playerName: opp.name });
-          op.status = 'home';
-          op.pathPosition = -1;
-          op.trackPosition = -1;
-        }
-      }
+    for (const { piece: op, player: opp } of capturesAt(piece.trackPosition, playerIndex, s.players, pc)) {
+      capturedPieces.push({ id: op.id, playerName: opp.name });
+      op.status = 'home';
+      op.pathPosition = -1;
+      op.trackPosition = -1;
     }
   }
 
@@ -299,4 +372,6 @@ module.exports = {
   generateRoomCode, createInitialState, sanitizeState, createPlayer,
   advanceTurn, clearDice, skipTurn, finalizeIfOver, registerRoll,
   applyMove, pickAutoMove, rollDie,
+  // teams
+  TEAM_SIZE, pickTeamForNewPlayer, arrangeTeamSeats,
 };

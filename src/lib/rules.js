@@ -144,23 +144,52 @@ function getWalkSteps(fromPath, toPath) {
 }
 
 /**
- * Would landing on `trackIndex` capture an opponent? Mirrors the exact
- * capture rule in game-logic.js's applyMove (safe squares block captures; a
- * block of 2+ same-colour pieces cannot be captured) so the client can
- * preview a move as a capture before it's actually played, without ever
- * disagreeing with what the server will really do.
+ * Which side a player plays for: their team in a 2v2 game, otherwise just
+ * themselves. Two players on the same side never capture each other, and
+ * their pieces pool together to form a protected block.
+ * @param {{slotIndex:number, team?:number|null}} player
+ */
+function sideOf(player) {
+  return player.team != null ? `t${player.team}` : `s${player.slotIndex}`;
+}
+
+/**
+ * Every opposing piece that landing on `trackIndex` would capture — the one
+ * capture rule, used by the server to apply a move and by the board to
+ * preview it, so the two can never disagree.
+ *
+ * Safe squares capture nothing. Otherwise opponents are grouped by side: a
+ * side with 2+ pieces on the square forms a block and is protected (in a
+ * team game that includes one piece from each partner); a side with exactly
+ * one piece there loses it.
  * @param {number} trackIndex @param {number} playerIndex
- * @param {Array<{slotIndex:number,pieces:Array<{status:string,trackPosition:number}>}>} players
+ * @param {Array<{slotIndex:number,team?:number|null,name?:string,pieces:Array<{id:string,status:string,trackPosition:number}>}>} players
  * @param {number} pc
  */
-function wouldCaptureAt(trackIndex, playerIndex, players, pc) {
-  if (getSafeSet(pc).has(trackIndex)) return false;
+function capturesAt(trackIndex, playerIndex, players, pc) {
+  if (getSafeSet(pc).has(trackIndex)) return [];
+  const mover = players.find((p) => p.slotIndex === playerIndex);
+  const moverSide = mover ? sideOf(mover) : `s${playerIndex}`;
+  const bySide = new Map();
   for (const opp of players) {
-    if (opp.slotIndex === playerIndex) continue;
-    const stacked = opp.pieces.filter((p) => p.status === 'active' && p.trackPosition === trackIndex);
-    if (stacked.length === 1) return true;
+    const side = sideOf(opp);
+    if (side === moverSide) continue;
+    for (const piece of opp.pieces) {
+      if (piece.status !== 'active' || piece.trackPosition !== trackIndex) continue;
+      if (!bySide.has(side)) bySide.set(side, []);
+      bySide.get(side).push({ piece, player: opp });
+    }
   }
-  return false;
+  const captured = [];
+  for (const group of bySide.values()) {
+    if (group.length === 1) captured.push(group[0]);
+  }
+  return captured;
+}
+
+/** Would landing on `trackIndex` capture anything? Preview-only shorthand. */
+function wouldCaptureAt(trackIndex, playerIndex, players, pc) {
+  return capturesAt(trackIndex, playerIndex, players, pc).length > 0;
 }
 
 // ─── Move legality ───────────────────────────────────────────────────────────
@@ -328,7 +357,7 @@ module.exports = {
   SQUARE_START, SQUARE_SAFE,
   isSquareBoard, getHexArms, getTrackLen, getLoopLen, getGoalPos, getSafeSet, getStartSq,
   isOnTrack, pathToTrack, getHomeEntrance, isValidPlayerCount, getValidMoves, squareArm,
-  getWalkSteps, wouldCaptureAt,
+  getWalkSteps, wouldCaptureAt, capturesAt, sideOf,
   // square geometry
   SQUARE_GRID, SQUARE_CELL, SQUARE_SIZE,
   SQUARE_TRACK, SQUARE_HOME_COLS, SQUARE_HOME_QUADRANTS,

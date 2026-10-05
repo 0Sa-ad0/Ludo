@@ -5,7 +5,7 @@ test('lobby shows the hex-board hint once 5+ players is selected', async ({ page
   await page.goto('/');
   await clickUntil(page, page.locator('#btn-create-room'), page.locator('#input-create-name'));
   await page.locator('#btn-player-count-5').click();
-  await expect(page.getByText(/Hexagonal board will be used for 5 players/i)).toBeVisible();
+  await expect(page.getByText(/bigger star-shaped board is used for 5 players/i)).toBeVisible();
 });
 
 test('a 5-player room actually renders the hex board once full', async ({ browser }) => {

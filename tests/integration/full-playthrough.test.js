@@ -31,6 +31,11 @@ beforeAll(async () => {
     // production delay value itself (that's a UX choice, not a rule), just
     // that the server plays the only legal move unprompted.
     FORCED_MOVE_DELAY_MS: '50',
+    // Same for the dead-roll pause: hundreds of rolls at the production
+    // 3.6s each would blow the time budget. The production value itself is
+    // guarded separately (teams.test.js — "a dead roll does not pass the
+    // turn before the dice animation has finished").
+    SKIP_NOTICE_MS: '50',
   });
   await waitForServer(PORT);
   ({ connect, closeAll } = makeClientFactory(PORT));
