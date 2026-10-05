@@ -296,17 +296,19 @@ export default function SquareBoard({
       })}
 
       {/* ── Home columns ───────────────────────────────────────────────── */}
+      {/* An empty seat's lane is still drawn, just plain and dim — skipping
+          it left a 5-square hole in that arm of the cross. */}
       {SQUARE_HOME_COLS.map((col, slot) => {
         const player = players.find((p) => visualSlot(p.slotIndex) === slot);
-        if (!player) return null;
-        const color = PLAYER_COLORS[player.colorIndex];
+        const color = player ? PLAYER_COLORS[player.colorIndex] : null;
         return col.map(([r, c], i) => (
           <rect
             key={`hc-${slot}-${i}`}
+            data-testid={player ? undefined : `empty-lane-${slot}`}
             x={c * CELL + 1.5} y={r * CELL + 1.5}
             width={CELL - 3} height={CELL - 3}
-            fill={`${color.hex}33`}
-            stroke={`${color.hex}70`}
+            fill={color ? `${color.hex}33` : 'rgba(255,255,255,0.035)'}
+            stroke={color ? `${color.hex}70` : 'rgba(255,255,255,0.13)'}
             strokeWidth={0.8}
             rx={3}
           />
@@ -317,7 +319,9 @@ export default function SquareBoard({
       <g>
         {[0, 1, 2, 3].map((slot) => {
           const player = players.find((p) => visualSlot(p.slotIndex) === slot);
-          const color = player ? PLAYER_COLORS[player.colorIndex].hex : '#333355';
+          // Empty seats get a plain grey triangle — at near-zero opacity the
+          // centre used to read as an hourglass instead of a square.
+          const color = player ? PLAYER_COLORS[player.colorIndex].hex : '#4a4a6a';
           const corners: Record<number, string> = {
             0: `${GOAL_MIN},${GOAL_MAX} ${GOAL_MAX},${GOAL_MAX}`,
             1: `${GOAL_MIN},${GOAL_MIN} ${GOAL_MIN},${GOAL_MAX}`,
@@ -329,8 +333,8 @@ export default function SquareBoard({
               key={`goal-${slot}`}
               points={`${corners[slot]} ${CENTER[0]},${CENTER[1]}`}
               fill={color}
-              opacity={player ? 0.3 : 0.12}
-              stroke={player ? `${color}90` : 'rgba(255,255,255,0.08)'}
+              opacity={player ? 0.3 : 0.35}
+              stroke={player ? `${color}90` : 'rgba(255,255,255,0.15)'}
               strokeWidth={1}
             />
           );

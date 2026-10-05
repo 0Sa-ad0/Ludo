@@ -160,6 +160,17 @@ test('the ping indicator sits inside the top bar, not over the page', async ({ b
   await guest.ctx.close();
 });
 
+// REGRESSION: an empty seat's lane wasn't drawn at all, leaving a 5-square
+// hole in two arms of the cross in every 2-player game.
+test('a 2-player board still draws the empty seats\' lanes', async ({ browser }) => {
+  const host = await createRoom(browser, { name: 'Lane1', count: 2 });
+  const guest = await joinRoom(browser, { name: 'Lane2', roomCode: host.roomCode });
+  await expect(host.page.getByTestId('turn-text')).toBeVisible({ timeout: 15_000 });
+  await expect(host.page.locator('[data-testid^="empty-lane-"]')).toHaveCount(10);
+  await host.ctx.close();
+  await guest.ctx.close();
+});
+
 test('on the 5-player board, your own home is turned to face you', async ({ browser }) => {
   test.setTimeout(90_000);
   const host = await createRoom(browser, { name: 'P0', count: 5 });

@@ -38,6 +38,8 @@ module.exports = defineConfig({
       // data — server.js already degrades gracefully to in-memory-only when the
       // configured database can't be reached or doesn't exist.
       DB_NAME: 'ludo_game_e2e_test',
+      // Never adopt a real ngrok tunnel that happens to be running locally.
+      NGROK_DETECT: 'off',
     },
   },
 });

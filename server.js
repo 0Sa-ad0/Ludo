@@ -1072,6 +1072,9 @@ Promise.all([app.prepare(), initDb()]).then(async () => {
  * LAN-only case, not an error.
  */
 async function detectNgrokUrl(attempt = 0) {
+  // Test servers set this: otherwise a real tunnel running on the same
+  // machine (someone playing while tests run) gets picked up as theirs.
+  if (process.env.NGROK_DETECT === 'off') return;
   const MAX_ATTEMPTS = 10;
   const RETRY_MS = 2000;
   try {
@@ -1090,5 +1093,10 @@ async function detectNgrokUrl(attempt = 0) {
 
   if (attempt < MAX_ATTEMPTS) {
     setTimeout(() => detectNgrokUrl(attempt + 1), RETRY_MS).unref?.();
+    return;
   }
+  // ngrok runs hidden inside this same window (see start.bat), so this line
+  // is the only place a failed tunnel ever shows up.
+  console.log('[NGROK] Not running — only players on the same WiFi can join.');
+  console.log('        If you expected it, see ngrok.log in the game folder.');
 }

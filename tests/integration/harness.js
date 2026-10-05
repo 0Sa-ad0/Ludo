@@ -23,6 +23,7 @@ function startServer(port, env = {}) {
       // Isolated, nonexistent DB so integration runs never touch real data —
       // server.js degrades gracefully to in-memory-only when it can't connect.
       DB_NAME: 'ludo_game_integration_test',
+      NGROK_DETECT: 'off',
       ...env,
     },
     stdio: 'ignore',
